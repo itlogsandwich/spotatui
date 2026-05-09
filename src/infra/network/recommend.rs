@@ -1,6 +1,7 @@
 use super::Network;
 use crate::core::app::{ActiveBlock, RouteId, TrackTableContext};
 use anyhow::anyhow;
+use futures::future;
 use rspotify::model::{
   enums::Country,
   idtypes::{ArtistId, TrackId},
@@ -62,14 +63,10 @@ impl RecommendationNetwork for Network {
           .filter_map(|t| t.id.clone())
           .collect();
 
-        let mut full_tracks = Vec::new();
-        if !track_ids.is_empty() {
-          for id in &track_ids {
-            if let Ok(track) = self.spotify.track(id.clone(), None).await {
-              full_tracks.push(track);
-            }
-          }
-        }
+        let fetch_futures = track_ids.into_iter().map(|id| self.spotify.track(id, None));
+
+        let results = future::join_all(fetch_futures).await;
+        let full_tracks: Vec<_> = results.into_iter().filter_map(|res| res.ok()).collect();
 
         let mut app = self.app.lock().await;
         app.track_table.tracks = full_tracks;
