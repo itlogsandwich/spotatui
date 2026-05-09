@@ -48,7 +48,6 @@ impl RecommendationNetwork for Network {
       .await
     {
       Ok(recommendations) => {
-        let mut app = self.app.lock().await;
         // Convert SimplifiedTrack to FullTrack (best effort)
         // SimplifiedTrack doesn't have album field which FullTrack needs.
         // This is tricky. Recommendations usually return SimplifiedTracks.
@@ -72,6 +71,7 @@ impl RecommendationNetwork for Network {
           }
         }
 
+        let mut app = self.app.lock().await;
         app.track_table.tracks = full_tracks;
 
         // Prepend the seed track if available so user knows context
