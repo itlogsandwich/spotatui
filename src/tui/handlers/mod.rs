@@ -739,6 +739,9 @@ mod tests {
     assert!(app.friend_add_dialog_visible);
     assert_eq!(app.friend_add_input, vec!['c']);
     assert!(app.status_message.is_none());
+  }
+
+  #[test]
   fn ctrl_f_in_playlist_track_table_opens_playlist_search_input() {
     let mut app = App::default();
     let playlist_id = PlaylistId::from_id("37i9dQZF1DX4WYpdgoIcn6")
