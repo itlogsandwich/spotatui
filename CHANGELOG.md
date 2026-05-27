@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **Spotify auth retry path**: Centralized authenticated Spotify API requests behind a shared refresh-and-retry flow so expired access tokens are handled consistently across playback, library, search, recommendation, metadata, and user calls.
+
 ## [v0.38.4] 2026-05-26
 
 ### Added
