@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Friends screen**: Added a new Library entry and full Friends screen backed by spotatui.com, including friend-code display, online filtering, inline name search, and live now-playing status for followed users.
+- **Friend management flows**: Added add-friend support by friend code or username search, plus unfollow actions and periodic background refresh while the Friends screen is open.
+- **Wayland clipboard support**: Enabled Linux `arboard` Wayland data-control support so clipboard operations like copying the friend code work reliably on Wayland sessions.
+
+### Fixed
+
+- **Friends key handling**: Friends-specific keys and inline input now take precedence over conflicting global shortcuts, so add/search/copy/filter actions stay local to the Friends UI.
+
 ## [v0.38.4] 2026-05-26
 
 ### Added

@@ -1717,6 +1717,9 @@ mod tests {
 
   #[test]
   fn now_playing_uses_public_spotatui_domain() {
-    assert_eq!(NOW_PLAYING_SYNC_URL, "https://spotatui.com/api/sync/now-playing");
+    assert_eq!(
+      NOW_PLAYING_SYNC_URL,
+      "https://spotatui.com/api/sync/now-playing"
+    );
   }
 }
