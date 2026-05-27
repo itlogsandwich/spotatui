@@ -47,7 +47,7 @@ use crate::tui::banner::BANNER;
 
 use anyhow::{anyhow, Result};
 use backtrace::Backtrace;
-use clap::{Arg, Command as ClapApp};
+use clap::{Arg, ArgMatches, Command as ClapApp};
 use clap_complete::{generate, Shell};
 use log::info;
 #[cfg(feature = "streaming")]
@@ -409,6 +409,109 @@ fn install_panic_hook() {
   }));
 }
 
+#[cfg(feature = "self-update")]
+fn add_self_update_cli(clap_app: ClapApp) -> ClapApp {
+  clap_app
+    .arg(
+      Arg::new("no-update")
+        .short('U')
+        .long("no-update")
+        .action(clap::ArgAction::SetTrue)
+        .help("Skip the automatic update check on startup"),
+    )
+    .subcommand(
+      ClapApp::new("update")
+        .version(env!("CARGO_PKG_VERSION"))
+        .about("Check for and install updates")
+        .arg(
+          Arg::new("install")
+            .short('i')
+            .long("install")
+            .action(clap::ArgAction::SetTrue)
+            .help("Install the update if available"),
+        ),
+    )
+}
+
+#[cfg(not(feature = "self-update"))]
+fn add_self_update_cli(clap_app: ClapApp) -> ClapApp {
+  clap_app
+}
+
+#[cfg(feature = "self-update")]
+fn handle_self_update_command(matches: &ArgMatches) -> Result<bool> {
+  if let Some(update_matches) = matches.subcommand_matches("update") {
+    let do_install = update_matches.get_flag("install");
+    cli::check_for_update(do_install)?;
+    return Ok(true);
+  }
+
+  Ok(false)
+}
+
+#[cfg(not(feature = "self-update"))]
+fn handle_self_update_command(_matches: &ArgMatches) -> Result<bool> {
+  Ok(false)
+}
+
+#[cfg(feature = "self-update")]
+async fn run_auto_update(matches: &ArgMatches, user_config: &UserConfig) {
+  if matches.subcommand_name().is_some()
+    || std::env::var_os("SPOTATUI_SKIP_UPDATE").is_some()
+    || matches.get_flag("no-update")
+    || user_config.behavior.disable_auto_update
+  {
+    return;
+  }
+
+  println!("Checking for updates...");
+  // Must use spawn_blocking because self_update uses reqwest::blocking internally,
+  // which creates its own tokio runtime and panics if called from an async context.
+  let delay_secs =
+    crate::core::user_config::parse_update_delay_secs(&user_config.behavior.auto_update_delay)
+      .unwrap_or(0);
+  let update_result = tokio::task::spawn_blocking(move || cli::install_update_silent(delay_secs))
+    .await
+    .ok()
+    .and_then(|r| r.ok());
+
+  match update_result {
+    Some(cli::UpdateOutcome::Installed(new_version)) => {
+      println!("Updated to v{}! Restarting...", new_version);
+      // Re-exec the current binary with the same args, skipping the update check.
+      let exe = std::env::current_exe().expect("failed to get current executable path");
+      let args: Vec<String> = std::env::args().skip(1).collect();
+      let status = std::process::Command::new(&exe)
+        .args(&args)
+        .env("SPOTATUI_SKIP_UPDATE", "1")
+        .status();
+      match status {
+        Ok(exit_status) => std::process::exit(exit_status.code().unwrap_or(0)),
+        Err(e) => {
+          eprintln!("Failed to restart after update: {}", e);
+          eprintln!("Please restart spotatui manually.");
+          std::process::exit(1);
+        }
+      }
+    }
+    Some(cli::UpdateOutcome::Pending {
+      version,
+      secs_remaining,
+    }) => {
+      println!(
+        "Update v{} detected — will install in {}. Run `spotatui update --install` to update now.",
+        version,
+        crate::core::user_config::format_update_delay_secs(secs_remaining)
+      );
+    }
+    // Up-to-date, check failed, or no update — continue normally.
+    _ => {}
+  }
+}
+
+#[cfg(not(feature = "self-update"))]
+async fn run_auto_update(_matches: &ArgMatches, _user_config: &UserConfig) {}
+
 pub async fn run() -> Result<()> {
   setup_logging()?;
   info!("spotatui {} starting up", env!("CARGO_PKG_VERSION"));
@@ -418,7 +521,8 @@ pub async fn run() -> Result<()> {
   install_panic_hook();
   info!("panic hook configured");
 
-  let mut clap_app = ClapApp::new(env!("CARGO_PKG_NAME"))
+  let mut clap_app = add_self_update_cli(
+    ClapApp::new(env!("CARGO_PKG_NAME"))
     .version(env!("CARGO_PKG_VERSION"))
     .author(env!("CARGO_PKG_AUTHORS"))
     .about(env!("CARGO_PKG_DESCRIPTION"))
@@ -450,13 +554,6 @@ screens more often and cost more CPU. Animation-heavy views keep their separate 
         .help("Rerun client authentication setup wizard"),
     )
     .arg(
-      Arg::new("no-update")
-        .short('U')
-        .long("no-update")
-        .action(clap::ArgAction::SetTrue)
-        .help("Skip the automatic update check on startup"),
-    )
-    .arg(
       Arg::new("completions")
         .long("completions")
         .help("Generates completions for your preferred shell")
@@ -467,20 +564,9 @@ screens more often and cost more CPU. Animation-heavy views keep their separate 
     .subcommand(cli::playback_subcommand())
     .subcommand(cli::play_subcommand())
     .subcommand(cli::list_subcommand())
-    .subcommand(cli::search_subcommand())
-    // Self-update command
-    .subcommand(
-      ClapApp::new("update")
-        .version(env!("CARGO_PKG_VERSION"))
-        .about("Check for and install updates")
-        .arg(
-          Arg::new("install")
-            .short('i')
-            .long("install")
-            .action(clap::ArgAction::SetTrue)
-            .help("Install the update if available"),
-        ),
-    );
+    .subcommand(cli::history_subcommand())
+    .subcommand(cli::search_subcommand()),
+  );
 
   let matches = clap_app.clone().get_matches();
 
@@ -499,9 +585,13 @@ screens more often and cost more CPU. Animation-heavy views keep their separate 
   }
 
   // Handle self-update command (doesn't need Spotify auth)
-  if let Some(update_matches) = matches.subcommand_matches("update") {
-    let do_install = update_matches.get_flag("install");
-    return cli::check_for_update(do_install);
+  if handle_self_update_command(&matches)? {
+    return Ok(());
+  }
+
+  if let Some(history_matches) = matches.subcommand_matches("history") {
+    println!("{}", cli::handle_history_matches(history_matches)?);
+    return Ok(());
   }
 
   // Auto-update on launch: silently check, download, install, and restart.
@@ -515,60 +605,7 @@ screens more often and cost more CPU. Animation-heavy views keep their separate 
   user_config.load_config()?;
   info!("user config loaded successfully");
 
-  if matches.subcommand_name().is_none()
-    && std::env::var_os("SPOTATUI_SKIP_UPDATE").is_none()
-    && !matches.get_flag("no-update")
-    && !user_config.behavior.disable_auto_update
-  {
-    println!("Checking for updates...");
-    // Must use spawn_blocking because self_update uses reqwest::blocking internally,
-    // which creates its own tokio runtime and panics if called from an async context.
-    let delay_secs = cli::parse_delay_secs(&user_config.behavior.auto_update_delay).unwrap_or(0);
-    let update_result = tokio::task::spawn_blocking(move || cli::install_update_silent(delay_secs))
-      .await
-      .ok()
-      .and_then(|r| r.ok());
-    match update_result {
-      Some(cli::UpdateOutcome::Installed(new_version)) => {
-        println!("Updated to v{}! Restarting...", new_version);
-        // Re-exec the current binary with the same args, skipping the update check
-        let exe = std::env::current_exe().expect("failed to get current executable path");
-        let args: Vec<String> = std::env::args().skip(1).collect();
-        let status = std::process::Command::new(&exe)
-          .args(&args)
-          .env("SPOTATUI_SKIP_UPDATE", "1")
-          .status();
-        match status {
-          Ok(exit_status) => std::process::exit(exit_status.code().unwrap_or(0)),
-          Err(e) => {
-            eprintln!("Failed to restart after update: {}", e);
-            eprintln!("Please restart spotatui manually.");
-            std::process::exit(1);
-          }
-        }
-      }
-      Some(cli::UpdateOutcome::Pending {
-        version,
-        secs_remaining,
-      }) => {
-        let human = if secs_remaining >= 86400 {
-          format!("{}d", secs_remaining / 86400)
-        } else if secs_remaining >= 3600 {
-          format!("{}h", secs_remaining / 3600)
-        } else if secs_remaining >= 60 {
-          format!("{}m", secs_remaining / 60)
-        } else {
-          format!("{}s", secs_remaining)
-        };
-        println!(
-          "Update v{} detected — will install in {}. Run `spotatui update --install` to update now.",
-          version, human
-        );
-      }
-      // Up-to-date, check failed, or no update — continue normally
-      _ => {}
-    }
-  }
+  run_auto_update(&matches, &user_config).await;
 
   let initial_shuffle_enabled = user_config.behavior.shuffle_enabled;
   let initial_startup_behavior = user_config.behavior.startup_behavior;
@@ -732,6 +769,7 @@ screens more often and cost more CPU. Animation-heavy views keep their separate 
   // Launch the UI (async)
   } else {
     info!("launching interactive terminal ui");
+    crate::infra::history::spawn_history_collector(Arc::clone(&app));
     #[cfg(feature = "streaming")]
     let (streaming_supported_for_account, streaming_startup_status_message) =
       if client_config.enable_streaming {

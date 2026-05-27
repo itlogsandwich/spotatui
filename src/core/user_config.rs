@@ -2,10 +2,7 @@ use crate::tui::event::Key;
 use anyhow::{anyhow, Result};
 use ratatui::style::{Color, Style};
 use serde::{Deserialize, Serialize};
-use std::{
-  fs,
-  path::{Path, PathBuf},
-};
+use std::{fs, path::PathBuf};
 
 const FILE_NAME: &str = "config.yml";
 const CONFIG_DIR: &str = ".config";
@@ -44,6 +41,51 @@ pub fn validate_tick_rate_milliseconds(value: u64, label: &str) -> Result<u64> {
 
 pub fn normalize_tick_rate_milliseconds(value: i64) -> u64 {
   value.clamp(1, MAX_TICK_RATE_MILLISECONDS as i64) as u64
+}
+
+/// Parse a human-readable update delay into seconds.
+/// Accepts: "0", "30s", "10m", "2h", "7d", or a bare second count.
+pub fn parse_update_delay_secs(value: &str) -> Result<u64, String> {
+  let value = value.trim();
+  if value == "0" || value.is_empty() {
+    return Ok(0);
+  }
+
+  for (suffix, multiplier, label) in [
+    ("d", 86400_u64, "days"),
+    ("h", 3600_u64, "hours"),
+    ("m", 60_u64, "minutes"),
+    ("s", 1_u64, "seconds"),
+  ] {
+    if let Some(amount) = value.strip_suffix(suffix) {
+      return amount
+        .trim()
+        .parse::<u64>()
+        .map(|v| v * multiplier)
+        .map_err(|_| format!("Invalid {label} value"));
+    }
+  }
+
+  value
+    .parse::<u64>()
+    .map_err(|_| "Invalid numeric value or unknown suffix".to_string())
+}
+
+#[cfg(feature = "self-update")]
+pub fn format_update_delay_secs(secs: u64) -> String {
+  if secs >= 86400 {
+    format!("{}d", secs / 86400)
+  } else if secs >= 3600 {
+    format!("{}h", secs / 3600)
+  } else if secs >= 60 {
+    format!("{}m", secs / 60)
+  } else {
+    format!("{}s", secs)
+  }
+}
+
+fn default_app_config_dir() -> Option<PathBuf> {
+  dirs::home_dir().map(|home| home.join(CONFIG_DIR).join(APP_CONFIG_DIR))
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -628,6 +670,7 @@ pub struct KeyBindingsString {
   save_settings: Option<String>,
   listening_party: Option<String>,
   like_track: Option<String>,
+  generate_recap: Option<String>,
 }
 
 #[derive(Clone)]
@@ -665,6 +708,7 @@ pub struct KeyBindings {
   pub save_settings: Key,
   pub listening_party: Key,
   pub like_track: Key,
+  pub generate_recap: Key,
 }
 
 #[derive(Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -709,6 +753,7 @@ pub struct BehaviorConfigString {
   #[cfg(feature = "cover-art")]
   pub playbar_cover_art_size_percent: Option<u16>,
   pub keepawake_enabled: Option<bool>,
+  pub sync_token: Option<String>,
 }
 
 #[derive(Clone)]
@@ -753,6 +798,7 @@ pub struct BehaviorConfig {
   #[cfg(feature = "cover-art")]
   pub playbar_cover_art_size_percent: u16,
   pub keepawake_enabled: bool,
+  pub sync_token: Option<String>,
 }
 
 #[derive(Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -775,8 +821,9 @@ pub struct UserConfig {
 impl UserConfig {
   /// Get the spotatui app config directory (~/.config/spotatui).
   /// Returns None if $HOME is not set.
+  #[cfg(feature = "self-update")]
   pub fn get_app_config_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(CONFIG_DIR).join(APP_CONFIG_DIR))
+    default_app_config_dir()
   }
 
   pub fn new() -> UserConfig {
@@ -830,6 +877,7 @@ impl UserConfig {
         save_settings: Key::Alt('s'),
         listening_party: Key::Ctrl('p'),
         like_track: Key::Char('F'),
+        generate_recap: Key::Char('R'),
       },
       behavior: BehaviorConfig {
         seek_milliseconds: 5 * 1000,
@@ -872,20 +920,21 @@ impl UserConfig {
         #[cfg(feature = "cover-art")]
         playbar_cover_art_size_percent: 100,
         keepawake_enabled: true,
+        sync_token: None,
       },
       path_to_config: None,
     }
   }
 
   pub fn get_or_build_paths(&mut self) -> Result<()> {
-    match dirs::home_dir() {
-      Some(home) => {
-        let path = Path::new(&home);
-        let home_config_dir = path.join(CONFIG_DIR);
-        let app_config_dir = home_config_dir.join(APP_CONFIG_DIR);
+    match default_app_config_dir() {
+      Some(app_config_dir) => {
+        let home_config_dir = app_config_dir
+          .parent()
+          .ok_or_else(|| anyhow!("Invalid app config directory"))?;
 
         if !home_config_dir.exists() {
-          fs::create_dir(&home_config_dir)?;
+          fs::create_dir(home_config_dir)?;
         }
 
         if !app_config_dir.exists() {
@@ -946,6 +995,7 @@ impl UserConfig {
     to_keys!(save_settings);
     to_keys!(listening_party);
     to_keys!(like_track);
+    to_keys!(generate_recap);
 
     Ok(())
   }
@@ -1161,6 +1211,15 @@ impl UserConfig {
       }
     }
 
+    if let Some(sync_token) = behavior_config.sync_token {
+      let trimmed = sync_token.trim();
+      if trimmed.is_empty() {
+        self.behavior.sync_token = None;
+      } else {
+        self.behavior.sync_token = Some(trimmed.to_string());
+      }
+    }
+
     if let Some(stop_after_current_track) = behavior_config.stop_after_current_track {
       self.behavior.stop_after_current_track = stop_after_current_track;
     }
@@ -1186,6 +1245,8 @@ impl UserConfig {
     }
 
     if let Some(auto_update_delay) = behavior_config.auto_update_delay {
+      parse_update_delay_secs(&auto_update_delay)
+        .map_err(|e| anyhow!("Invalid auto-update delay: {e}"))?;
       self.behavior.auto_update_delay = auto_update_delay;
     }
 
@@ -1278,6 +1339,7 @@ impl UserConfig {
       visualizer_style: Some(self.behavior.visualizer_style),
       dismissed_announcements: Some(self.behavior.dismissed_announcements.clone()),
       relay_server_url: Some(self.behavior.relay_server_url.clone()),
+      sync_token: self.behavior.sync_token.clone(),
       stop_after_current_track: Some(self.behavior.stop_after_current_track),
       sidebar_width_percent: Some(self.behavior.sidebar_width_percent),
       playbar_height_rows: Some(self.behavior.playbar_height_rows),
@@ -1367,6 +1429,7 @@ impl UserConfig {
       save_settings: Some(key_to_config_string(self.keys.save_settings)),
       listening_party: Some(key_to_config_string(self.keys.listening_party)),
       like_track: Some(key_to_config_string(self.keys.like_track)),
+      generate_recap: Some(key_to_config_string(self.keys.generate_recap)),
     };
 
     // Helper to build theme config from current values
@@ -1662,6 +1725,30 @@ mod tests {
 
       assert!(config.load_behaviorconfig(behavior).is_err());
     }
+  }
+
+  #[test]
+  fn parse_update_delay_secs_accepts_supported_units() {
+    use super::parse_update_delay_secs;
+
+    assert_eq!(parse_update_delay_secs("0"), Ok(0));
+    assert_eq!(parse_update_delay_secs(""), Ok(0));
+    assert_eq!(parse_update_delay_secs("7d"), Ok(7 * 86400));
+    assert_eq!(parse_update_delay_secs("2h"), Ok(2 * 3600));
+    assert_eq!(parse_update_delay_secs("10m"), Ok(10 * 60));
+    assert_eq!(parse_update_delay_secs("30s"), Ok(30));
+    assert_eq!(parse_update_delay_secs("120"), Ok(120));
+    assert!(parse_update_delay_secs("bogus").is_err());
+  }
+
+  #[test]
+  fn invalid_auto_update_delay_is_rejected() {
+    use super::{BehaviorConfigString, UserConfig};
+
+    let behavior: BehaviorConfigString = serde_yaml::from_str("auto_update_delay: bogus").unwrap();
+    let mut config = UserConfig::new();
+
+    assert!(config.load_behaviorconfig(behavior).is_err());
   }
 
   #[cfg(feature = "cover-art")]
