@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.38.6] 2026-05-28
+
+### Fixed
+
+- **Playback API false errors**: Fixed Spotify playback mutation requests so starting playback no longer surfaces bogus API errors like `411 Length Required` or JSON parse failures when Spotify accepts the action but returns an empty or non-JSON success response.
+
 ## [v0.38.5] 2026-05-27
 
 ### Added

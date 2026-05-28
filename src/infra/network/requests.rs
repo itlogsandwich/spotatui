@@ -1,6 +1,7 @@
 use super::Network;
 use crate::core::{app::App, auth};
 use anyhow::anyhow;
+use reqwest::header::CONTENT_LENGTH;
 use reqwest::Method;
 use rspotify::AuthCodePkceSpotify;
 use serde::de::DeserializeOwned;
@@ -17,6 +18,17 @@ use tokio::sync::Mutex;
 static SPOTIFY_API_PACING: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
 const SPOTIFY_API_MIN_INTERVAL: Duration = Duration::from_millis(250);
 const SPOTIFY_API_BASE_URL: &str = "https://api.spotify.com/v1/";
+
+fn response_is_json(response: &reqwest::Response) -> bool {
+  response
+    .headers()
+    .get(reqwest::header::CONTENT_TYPE)
+    .and_then(|value| value.to_str().ok())
+    .is_some_and(|value| {
+      let value = value.to_ascii_lowercase();
+      value.contains("/json") || value.contains("+json")
+    })
+}
 
 pub async fn pace_spotify_api_call() {
   let pacing_lock = SPOTIFY_API_PACING.get_or_init(|| Mutex::new(None));
@@ -114,6 +126,13 @@ where
 
     if let Some(payload) = body.clone() {
       request = request.json(&payload);
+    } else if matches!(
+      method,
+      Method::POST | Method::PUT | Method::DELETE | Method::PATCH
+    ) {
+      // Some Spotify mutation endpoints reject bodyless requests unless the
+      // transport explicitly declares an empty body with Content-Length: 0.
+      request = request.header(CONTENT_LENGTH, "0").body(Vec::new());
     }
 
     let response = match request.send().await {
@@ -129,11 +148,15 @@ where
       }
     };
     if response.status().is_success() {
+      let should_parse_json = response_is_json(&response);
       let response_body = response.text().await?;
       if response_body.trim().is_empty() {
         return Ok(Value::Null);
       }
-      return Ok(serde_json::from_str(&response_body)?);
+      if should_parse_json {
+        return Ok(serde_json::from_str(&response_body)?);
+      }
+      return Ok(Value::Null);
     }
 
     let status = response.status();
@@ -486,5 +509,85 @@ mod tests {
         "authorization: bearer new_access".to_string()
       ]
     );
+  }
+
+  #[tokio::test]
+  async fn sends_content_length_zero_for_empty_mutation_requests() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}/v1/", listener.local_addr().unwrap());
+    let seen_request = Arc::new(Mutex::new(String::new()));
+    let seen_request_for_server = Arc::clone(&seen_request);
+
+    let server = tokio::spawn(async move {
+      let (mut stream, _) = listener.accept().await.unwrap();
+      let request = read_http_request(&mut stream).await;
+      *seen_request_for_server.lock().await = request;
+
+      let body = r#"{"ok":true}"#;
+      let response = format!(
+        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+      );
+      stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let spotify = spotify_with_access_token("access_token").await;
+
+    let result = spotify_api_request_json_for_base_with_refresh(
+      &spotify,
+      &base_url,
+      Method::PUT,
+      "me/player/shuffle",
+      &[("state", "true".to_string())],
+      None,
+      |_force| async move { Ok(Some(SystemTime::now() + Duration::from_secs(3600))) },
+    )
+    .await
+    .unwrap();
+
+    server.await.unwrap();
+
+    let request = seen_request.lock().await.clone();
+    assert_eq!(result, json!({ "ok": true }));
+    assert!(request.starts_with("PUT /v1/me/player/shuffle?state=true HTTP/1.1\r\n"));
+    assert!(request
+      .to_ascii_lowercase()
+      .contains("content-length: 0\r\n"));
+  }
+
+  #[tokio::test]
+  async fn ignores_non_json_success_body_for_mutation_requests() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}/v1/", listener.local_addr().unwrap());
+
+    let server = tokio::spawn(async move {
+      let (mut stream, _) = listener.accept().await.unwrap();
+      let _request = read_http_request(&mut stream).await;
+
+      let body = "OK";
+      let response = format!(
+        "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+      );
+      stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let spotify = spotify_with_access_token("access_token").await;
+
+    let result = spotify_api_request_json_for_base_with_refresh(
+      &spotify,
+      &base_url,
+      Method::PUT,
+      "me/player/play",
+      &[],
+      None,
+      |_force| async move { Ok(Some(SystemTime::now() + Duration::from_secs(3600))) },
+    )
+    .await
+    .unwrap();
+
+    server.await.unwrap();
+
+    assert_eq!(result, Value::Null);
   }
 }
