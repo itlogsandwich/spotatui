@@ -2124,10 +2124,19 @@ impl App {
       }
     }
 
-    // Fallback: strict name match (case-insensitive)
+    // Fallback: strict name match (case-insensitive), but only while we have
+    // fresh native activity or a recent explicit activation. After a recovery,
+    // Spotify can keep returning the old "spotatui" device while the new native
+    // player is connected but stopped/not active.
     if let Some(native_name) = native_device_name.as_ref() {
       let current_device_name = ctx.device.name.to_lowercase();
-      if current_device_name == native_name.as_str() {
+      if current_device_name == native_name.as_str()
+        && (self.native_track_info.is_some()
+          || self.native_is_playing == Some(true)
+          || self
+            .last_device_activation
+            .is_some_and(|instant| instant.elapsed() < Duration::from_secs(5)))
+      {
         return true;
       }
     }

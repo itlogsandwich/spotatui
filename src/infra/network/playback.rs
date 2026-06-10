@@ -217,10 +217,19 @@ async fn is_native_streaming_active_for_playback(network: &Network) -> bool {
     }
   }
 
-  // Fallback: strict name match (case-insensitive)
+  // Fallback: strict name match (case-insensitive), but only while we have
+  // fresh native activity or a recent explicit activation. After a recovery,
+  // Spotify can keep returning the old "spotatui" device while the new native
+  // player is connected but stopped/not active.
   if let Some(native_name) = native_device_name.as_ref() {
     let current_device_name = ctx.device.name.to_lowercase();
-    if current_device_name == native_name.as_str() {
+    if current_device_name == native_name.as_str()
+      && (app.native_track_info.is_some()
+        || app.native_is_playing == Some(true)
+        || app
+          .last_device_activation
+          .is_some_and(|instant| instant.elapsed() < Duration::from_secs(5)))
+    {
       return true;
     }
   }
@@ -372,8 +381,14 @@ impl PlaybackNetwork for Network {
           {
             return current_id == native_id;
           }
+
           let native_name = p.device_name().to_lowercase();
           c.device.name.to_lowercase() == native_name
+            && (app.native_track_info.is_some()
+              || app.native_is_playing == Some(true)
+              || app
+                .last_device_activation
+                .is_some_and(|instant| instant.elapsed() < Duration::from_secs(5)))
         });
 
         #[cfg(feature = "streaming")]
