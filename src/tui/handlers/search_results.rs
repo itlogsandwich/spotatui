@@ -395,7 +395,11 @@ fn handle_recommended_tracks(app: &mut App) {
 
             app.recommendations_context = Some(RecommendationsContext::Song);
             app.recommendations_seed = track.name.clone();
-            app.get_recommendations_for_seed(None, track_id_list, Some(track.clone()));
+            app.get_recommendations_for_seed(
+              None,
+              track_id_list,
+              Some(crate::core::plugin_api::TrackInfo::from(track)),
+            );
           };
         };
       };

@@ -1,3 +1,4 @@
+use crate::core::plugin_api::TrackInfo;
 use crate::core::sort::{SortContext, SortField, SortOrder, SortState};
 use crate::core::user_config::{color_to_string, normalize_tick_rate_milliseconds, UserConfig};
 use crate::infra::network::sync::{PartySession, PartyStatus};
@@ -455,7 +456,7 @@ pub struct SearchResult {
 
 #[derive(Default)]
 pub struct TrackTable {
-  pub tracks: Vec<FullTrack>,
+  pub tracks: Vec<TrackInfo>,
   pub selected_index: usize,
   pub context: Option<TrackTableContext>,
 }
@@ -875,9 +876,9 @@ pub struct App {
   /// Selected index in the Discover view
   pub discover_selected_index: usize,
   /// Top tracks from the user for Discover feature
-  pub discover_top_tracks: Vec<FullTrack>,
+  pub discover_top_tracks: Vec<TrackInfo>,
   /// Top Artists Mix tracks for Discover feature
-  pub discover_artists_mix: Vec<FullTrack>,
+  pub discover_artists_mix: Vec<TrackInfo>,
   /// Time range for Top Tracks
   pub discover_time_range: DiscoverTimeRange,
   /// Whether we're currently loading discover data
@@ -2007,7 +2008,7 @@ impl App {
     &mut self,
     seed_artists: Option<Vec<String>>,
     seed_tracks: Option<Vec<String>>,
-    first_track: Option<FullTrack>,
+    first_track: Option<TrackInfo>,
   ) {
     let user_country = self.get_user_country();
     let seed_artist_ids = seed_artists.and_then(|ids| {
@@ -2579,7 +2580,7 @@ impl App {
         break;
       }
 
-      tracks.extend(page.items.iter().map(|item| item.track.clone()));
+      tracks.extend(page.items.iter().map(|item| TrackInfo::from(&item.track)));
       expected_offset = expected_offset.saturating_add(page.limit);
       active_index = page_index;
 
@@ -2594,7 +2595,7 @@ impl App {
   }
 
   pub fn set_playlist_tracks_to_table_continuous(&mut self) {
-    let mut tracks: Vec<FullTrack> = Vec::new();
+    let mut tracks: Vec<TrackInfo> = Vec::new();
     let mut track_ids: Vec<TrackId<'static>> = Vec::new();
     let mut positions: Vec<usize> = Vec::new();
     let mut expected_offset = 0;
@@ -2609,7 +2610,7 @@ impl App {
 
       for (idx, item) in page.items.iter().enumerate() {
         if let Some(PlayableItem::Track(full_track)) = item.item.as_ref() {
-          tracks.push(full_track.clone());
+          tracks.push(TrackInfo::from(full_track));
           if let Some(track_id) = full_track.id.as_ref() {
             track_ids.push(track_id.clone().into_static());
           }
@@ -2665,7 +2666,7 @@ impl App {
     self.playlist_track_positions = None;
   }
 
-  pub fn replace_track_table_tracks(&mut self, tracks: Vec<FullTrack>) {
+  pub fn replace_track_table_tracks(&mut self, tracks: Vec<TrackInfo>) {
     self.playlist_track_positions = None;
 
     let track_count = tracks.len();
@@ -2720,7 +2721,8 @@ impl App {
       .iter()
       .filter_map(|(track, _)| track.id.clone().map(|id| id.into_static()))
       .collect();
-    let (tracks, positions): (Vec<_>, Vec<_>) = matches.into_iter().unzip();
+    let tracks: Vec<TrackInfo> = matches.iter().map(|(track, _)| TrackInfo::from(track)).collect();
+    let positions: Vec<usize> = matches.into_iter().map(|(_, position)| position).collect();
 
     self.active_playlist_track_filter = Some(query);
     self.pending_playlist_track_search = None;
@@ -2942,6 +2944,7 @@ impl App {
       return false;
     }
 
+    let tracks = tracks.iter().map(TrackInfo::from).collect();
     self.replace_track_table_tracks(tracks);
     self.track_table.selected_index = 0;
     true
@@ -4737,8 +4740,8 @@ mod tests {
       false,
     ));
     app.track_table.tracks = vec![
-      full_track("0000000000000000000001", "Track 1"),
-      full_track("0000000000000000000002", "Track 2"),
+      TrackInfo::from(&full_track("0000000000000000000001", "Track 1")),
+      TrackInfo::from(&full_track("0000000000000000000002", "Track 2")),
     ];
     app.track_table.selected_index = 1;
 
@@ -4770,8 +4773,8 @@ mod tests {
     app.playlist_offset = 20;
     app.track_table.selected_index = 1;
     app.track_table.tracks = vec![
-      full_track("0000000000000000000001", "Track 1"),
-      full_track("0000000000000000000002", "Track 2"),
+      TrackInfo::from(&full_track("0000000000000000000001", "Track 1")),
+      TrackInfo::from(&full_track("0000000000000000000002", "Track 2")),
     ];
 
     app.reset_playlist_tracks_view(playlist_id.clone(), TrackTableContext::MyPlaylists);
@@ -4913,8 +4916,8 @@ mod tests {
     app.playlist_track_pages.upsert_page_by_offset(second_page);
     app.playlist_tracks = Some(first_page);
     app.track_table.tracks = vec![
-      full_track("0000000000000000000001", "Track 1"),
-      full_track("0000000000000000000002", "Track 2"),
+      TrackInfo::from(&full_track("0000000000000000000001", "Track 1")),
+      TrackInfo::from(&full_track("0000000000000000000002", "Track 2")),
     ];
     app.track_table.selected_index = 1;
     app.pending_track_table_selection = Some(PendingTrackSelection::Index(2));
@@ -4977,7 +4980,7 @@ mod tests {
     app.playlist_track_table_id = Some(playlist_id);
     app.playlist_track_pages.upsert_page_by_offset(page);
     app.active_playlist_track_filter = Some("second".to_string());
-    app.track_table.tracks = vec![full_track("0000000000000000000002", "Second")];
+    app.track_table.tracks = vec![TrackInfo::from(&full_track("0000000000000000000002", "Second"))];
     app.playlist_track_positions = Some(vec![1]);
 
     app.clear_playlist_track_filter();
@@ -4995,7 +4998,7 @@ mod tests {
     let active_playlist_id = playlist_id("37i9dQZF1DX4WYpdgoIcn6");
     let original_track = full_track("0000000000000000000001", "Original");
 
-    app.track_table.tracks = vec![original_track.clone()];
+    app.track_table.tracks = vec![TrackInfo::from(&original_track)];
     app.track_table.context = Some(TrackTableContext::PlaylistSearch);
     app.playlist_track_table_id = Some(active_playlist_id.clone());
 
@@ -5004,8 +5007,8 @@ mod tests {
       vec![full_track("0000000000000000000002", "Wrong Playlist")],
     ));
     assert_eq!(
-      app.track_table.tracks[0].id.as_ref().unwrap().id(),
-      original_track.id.as_ref().unwrap().id()
+      app.track_table.tracks[0].id.as_deref(),
+      original_track.id.as_ref().map(|id| id.id())
     );
 
     app.track_table.context = Some(TrackTableContext::SavedTracks);
@@ -5014,8 +5017,8 @@ mod tests {
       vec![full_track("0000000000000000000003", "Wrong Context")],
     ));
     assert_eq!(
-      app.track_table.tracks[0].id.as_ref().unwrap().id(),
-      original_track.id.as_ref().unwrap().id()
+      app.track_table.tracks[0].id.as_deref(),
+      original_track.id.as_ref().map(|id| id.id())
     );
   }
 

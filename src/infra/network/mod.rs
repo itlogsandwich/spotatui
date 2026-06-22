@@ -13,6 +13,7 @@ pub mod utils;
 use crate::core::app::App;
 use crate::core::auth;
 use crate::core::config::ClientConfig;
+use crate::core::plugin_api::TrackInfo;
 use anyhow::anyhow;
 use rspotify::model::{
   album::SimplifiedAlbum,
@@ -22,7 +23,6 @@ use rspotify::model::{
     AlbumId, ArtistId, EpisodeId, PlayContextId, PlayableId, PlaylistId, ShowId, TrackId, UserId,
   },
   show::SimplifiedShow,
-  track::FullTrack,
 };
 use rspotify::prelude::Id;
 use rspotify::AuthCodePkceSpotify;
@@ -72,7 +72,7 @@ pub enum IoEvent {
   GetRecommendationsForSeed(
     Option<Vec<ArtistId<'static>>>,
     Option<Vec<TrackId<'static>>>,
-    Box<Option<FullTrack>>,
+    Box<Option<TrackInfo>>,
     Option<Country>,
   ),
   GetCurrentUserSavedAlbums(Option<u32>),

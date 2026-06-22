@@ -320,17 +320,13 @@ pub fn draw_recommendations_table(f: &mut Frame<'_>, app: &App, layout_chunk: Re
     .tracks
     .iter()
     .map(|item| TableItem {
-      id: item
-        .id
-        .as_ref()
-        .map(|id| id.id().to_string())
-        .unwrap_or_else(|| "".to_string()),
+      id: item.id.clone().unwrap_or_default(),
       format: vec![
         "".to_string(),
         item.name.to_owned(),
-        create_artist_string(&item.artists),
-        item.album.name.to_owned(),
-        millis_to_minutes(item.duration.num_milliseconds() as u128),
+        item.artists.join(", "),
+        item.album.clone(),
+        millis_to_minutes(item.duration_ms as u128),
       ],
     })
     .collect::<Vec<TableItem>>();
@@ -400,17 +396,13 @@ pub fn draw_song_table(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
     .tracks
     .iter()
     .map(|item| TableItem {
-      id: item
-        .id
-        .as_ref()
-        .map(|id| id.id().to_string())
-        .unwrap_or_else(|| "".to_string()),
+      id: item.id.clone().unwrap_or_default(),
       format: vec![
         "".to_string(),
         item.name.to_owned(),
-        create_artist_string(&item.artists),
-        item.album.name.to_owned(),
-        millis_to_minutes(item.duration.num_milliseconds() as u128),
+        item.artists.join(", "),
+        item.album.clone(),
+        millis_to_minutes(item.duration_ms as u128),
       ],
     })
     .collect::<Vec<TableItem>>();

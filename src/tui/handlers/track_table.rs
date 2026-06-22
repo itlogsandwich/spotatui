@@ -147,7 +147,11 @@ fn open_add_to_playlist_dialog(app: &mut App) {
     None => return,
   };
 
-  let track_id = track.id.clone().map(|id| id.into_static());
+  let track_id = track
+    .id
+    .as_deref()
+    .and_then(|id| TrackId::from_id(id).ok())
+    .map(|id| id.into_static());
   let track_name = track.name.clone();
   app.begin_add_track_to_playlist_flow(track_id, track_name);
 }
@@ -169,8 +173,13 @@ fn open_remove_from_playlist_dialog(app: &mut App) {
     None => return,
   };
 
-  let track_id = match track.id.clone() {
-    Some(id) => id.into_static(),
+  let track_id = match track
+    .id
+    .as_deref()
+    .and_then(|id| TrackId::from_id(id).ok())
+    .map(|id| id.into_static())
+  {
+    Some(id) => id,
     None => {
       app.set_status_message("Track cannot be edited in playlist".to_string(), 4);
       return;
@@ -226,7 +235,7 @@ fn play_random_song(app: &mut App) {
           .track_table
           .tracks
           .iter()
-          .filter_map(|track| track_playable_id(track.id.clone()))
+          .filter_map(|track| track_playable_id(track.id.as_deref()))
           .collect();
         if !playable_ids.is_empty() {
           let rand_idx = thread_rng().gen_range(0..playable_ids.len());
@@ -243,7 +252,7 @@ fn play_random_song(app: &mut App) {
         // so next/previous can continue within the mix.
         let mut playable_ids: Vec<PlayableId<'static>> = Vec::new();
         for track in &app.track_table.tracks {
-          if let Some(playable_id) = track_playable_id(track.id.clone()) {
+          if let Some(playable_id) = track_playable_id(track.id.as_deref()) {
             playable_ids.push(playable_id);
           }
         }
@@ -263,7 +272,7 @@ fn play_random_song(app: &mut App) {
 fn handle_save_track_event(app: &mut App) {
   let (selected_index, tracks) = (&app.track_table.selected_index, &app.track_table.tracks);
   if let Some(track) = tracks.get(*selected_index) {
-    if let Some(playable_id) = track_playable_id(track.id.clone()) {
+    if let Some(playable_id) = track_playable_id(track.id.as_deref()) {
       app.dispatch(IoEvent::ToggleSaveTrack(playable_id));
     }
   };
@@ -273,7 +282,13 @@ fn handle_recommended_tracks(app: &mut App) {
   let (selected_index, tracks) = (&app.track_table.selected_index, &app.track_table.tracks);
   if let Some(track) = tracks.get(*selected_index) {
     let first_track = track.clone();
-    let track_id_list = track.id.as_ref().map(|id| vec![id.to_string()]);
+    // NOTE: preserves a pre-existing bug. The previous code fed the track's
+    // full URI ("spotify:track:...") as the seed, which `TrackId::from_id`
+    // rejects, so the whole seed_tracks list collapses to `None` and the
+    // recommendation request goes out unseeded. `TrackInfo::uri` reproduces
+    // that exact URI string; switching to `track.id` (base62) would change
+    // behavior. Fix the seeding separately with its own verification.
+    let track_id_list = track.uri.clone().map(|uri| vec![uri]);
 
     app.recommendations_context = Some(RecommendationsContext::Song);
     app.recommendations_seed = first_track.name.clone();
@@ -298,7 +313,7 @@ fn on_enter(app: &mut App) {
       TrackTableContext::MyPlaylists | TrackTableContext::PlaylistSearch => {
         if let Some(track) = tracks.get(*selected_index) {
           // Get the track ID to play
-          let track_playable_id = track_playable_id(track.id.clone());
+          let track_playable_id = track_playable_id(track.id.as_deref());
           let context_id = current_playlist_context_id(app);
 
           // If we have a track ID, play it directly within the context
@@ -324,7 +339,7 @@ fn on_enter(app: &mut App) {
         let mut selected_offset: Option<usize> = None;
 
         for (idx, track) in tracks.iter().enumerate() {
-          if let Some(playable_id) = track_playable_id(track.id.clone()) {
+          if let Some(playable_id) = track_playable_id(track.id.as_deref()) {
             if idx == *selected_index {
               selected_offset = Some(playable_ids.len());
             }
@@ -356,7 +371,7 @@ fn on_enter(app: &mut App) {
         let mut selected_offset: Option<usize> = None;
 
         for (idx, track) in tracks.iter().enumerate() {
-          if let Some(playable_id) = track_playable_id(track.id.clone()) {
+          if let Some(playable_id) = track_playable_id(track.id.as_deref()) {
             if idx == *selected_index {
               selected_offset = Some(playable_ids.len());
             }
@@ -386,21 +401,21 @@ fn on_queue(app: &mut App) {
     match context {
       TrackTableContext::MyPlaylists | TrackTableContext::PlaylistSearch => {
         if let Some(track) = tracks.get(*selected_index) {
-          if let Some(playable_id) = track_playable_id(track.id.clone()) {
+          if let Some(playable_id) = track_playable_id(track.id.as_deref()) {
             app.dispatch(IoEvent::AddItemToQueue(playable_id));
           }
         };
       }
       TrackTableContext::RecommendedTracks => {
         if let Some(track) = tracks.get(*selected_index) {
-          if let Some(playable_id) = track_playable_id(track.id.clone()) {
+          if let Some(playable_id) = track_playable_id(track.id.as_deref()) {
             app.dispatch(IoEvent::AddItemToQueue(playable_id));
           }
         }
       }
       TrackTableContext::SavedTracks => {
         if let Some(track) = tracks.get(*selected_index) {
-          if let Some(playable_id) = track_playable_id(track.id.clone()) {
+          if let Some(playable_id) = track_playable_id(track.id.as_deref()) {
             app.dispatch(IoEvent::AddItemToQueue(playable_id));
           }
         }
@@ -408,7 +423,7 @@ fn on_queue(app: &mut App) {
       TrackTableContext::AlbumSearch => {}
       TrackTableContext::DiscoverPlaylist => {
         if let Some(track) = tracks.get(*selected_index) {
-          if let Some(playable_id) = track_playable_id(track.id.clone()) {
+          if let Some(playable_id) = track_playable_id(track.id.as_deref()) {
             app.dispatch(IoEvent::AddItemToQueue(playable_id));
           }
         }
@@ -466,8 +481,12 @@ fn playlist_context_id_from_ref(id: &PlaylistId<'_>) -> PlayContextId<'static> {
   PlayContextId::Playlist(id.clone().into_static())
 }
 
-fn track_playable_id(id: Option<TrackId<'_>>) -> Option<PlayableId<'static>> {
-  id.map(|track_id| PlayableId::Track(track_id.into_static()))
+/// Re-parse a domain track id (base62 string) back into an rspotify
+/// [`PlayableId`] for dispatching playback/queue events. Returns `None` for
+/// missing or unparseable ids (e.g. local tracks).
+fn track_playable_id(id: Option<&str>) -> Option<PlayableId<'static>> {
+  let track_id = TrackId::from_id(id?).ok()?;
+  Some(PlayableId::Track(track_id.into_static()))
 }
 
 fn saved_tracks_playback_request(app: &App) -> Option<(Vec<PlayableId<'static>>, usize)> {
@@ -475,7 +494,7 @@ fn saved_tracks_playback_request(app: &App) -> Option<(Vec<PlayableId<'static>>,
   let mut selected_playable_offset = None;
 
   for (row_index, track) in app.track_table.tracks.iter().enumerate() {
-    if let Some(playable_id) = track_playable_id(track.id.clone()) {
+    if let Some(playable_id) = track_playable_id(track.id.as_deref()) {
       if row_index == app.track_table.selected_index {
         selected_playable_offset = Some(playable_ids.len());
       }
@@ -489,6 +508,7 @@ fn saved_tracks_playback_request(app: &App) -> Option<(Vec<PlayableId<'static>>,
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::core::plugin_api::TrackInfo;
   use crate::core::test_helpers::full_track;
   use crate::core::user_config::UserConfig;
   use chrono::Utc;
@@ -560,7 +580,7 @@ mod tests {
       false,
     );
     app.track_table.selected_index = 1;
-    app.track_table.tracks = page.items.iter().map(|item| item.track.clone()).collect();
+    app.track_table.tracks = page.items.iter().map(|item| TrackInfo::from(&item.track)).collect();
     app.library.saved_tracks.upsert_page_by_offset(page);
     app.library.saved_tracks.index = 0;
 
@@ -598,7 +618,7 @@ mod tests {
       .items
       .iter()
       .chain(second_page.items.iter())
-      .map(|item| item.track.clone())
+      .map(|item| TrackInfo::from(&item.track))
       .collect();
 
     let (uris, offset) = saved_tracks_playback_request(&app).unwrap();
@@ -635,7 +655,7 @@ mod tests {
       .items
       .iter()
       .chain(second_page.items.iter())
-      .map(|item| item.track.clone())
+      .map(|item| TrackInfo::from(&item.track))
       .collect();
 
     on_queue(&mut app);
@@ -669,8 +689,8 @@ mod tests {
     });
     app.active_playlist_track_filter = Some("track".to_string());
     app.track_table.tracks = vec![
-      full_track("0000000000000000000001", "Track 1"),
-      full_track("0000000000000000000002", "Track 2"),
+      TrackInfo::from(&full_track("0000000000000000000001", "Track 1")),
+      TrackInfo::from(&full_track("0000000000000000000002", "Track 2")),
     ];
     app.track_table.selected_index = 1;
 
@@ -704,7 +724,7 @@ mod tests {
     app.playlist_track_table_id = Some(playlist_id);
     app.playlist_track_pages.upsert_page_by_offset(first_page);
     app.active_playlist_track_filter = Some("track 2".to_string());
-    app.track_table.tracks = vec![full_track("0000000000000000000002", "Track 2")];
+    app.track_table.tracks = vec![TrackInfo::from(&full_track("0000000000000000000002", "Track 2"))];
     app.playlist_track_positions = Some(vec![1]);
 
     handler(Key::Char('q'), &mut app);
@@ -723,7 +743,7 @@ mod tests {
       false,
     );
     app.track_table.selected_index = 1;
-    app.track_table.tracks = page.items.iter().map(|item| item.track.clone()).collect();
+    app.track_table.tracks = page.items.iter().map(|item| TrackInfo::from(&item.track)).collect();
     app.library.saved_tracks.upsert_page_by_offset(page);
     app.library.saved_tracks.index = 0;
 
@@ -758,7 +778,7 @@ mod tests {
       true,
     );
     app.track_table.selected_index = 1;
-    app.track_table.tracks = page.items.iter().map(|item| item.track.clone()).collect();
+    app.track_table.tracks = page.items.iter().map(|item| TrackInfo::from(&item.track)).collect();
     app.library.saved_tracks.upsert_page_by_offset(page);
     app.library.saved_tracks.index = 0;
 
@@ -784,7 +804,7 @@ mod tests {
       2,
     );
     app.track_table.selected_index = 1;
-    app.track_table.tracks = page.items.iter().map(|item| item.track.clone()).collect();
+    app.track_table.tracks = page.items.iter().map(|item| TrackInfo::from(&item.track)).collect();
     app.library.saved_tracks.upsert_page_by_offset(page);
     app.library.saved_tracks.index = 0;
 
@@ -803,7 +823,7 @@ mod tests {
       true,
     );
     app.track_table.selected_index = 0;
-    app.track_table.tracks = page.items.iter().map(|item| item.track.clone()).collect();
+    app.track_table.tracks = page.items.iter().map(|item| TrackInfo::from(&item.track)).collect();
     app.library.saved_tracks.upsert_page_by_offset(page);
     app.library.saved_tracks.index = 0;
 
@@ -818,8 +838,8 @@ mod tests {
     let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
     app.track_table.context = Some(TrackTableContext::MyPlaylists);
     app.track_table.tracks = vec![
-      full_track("0000000000000000000001", "Track 1"),
-      full_track("0000000000000000000002", "Track 2"),
+      TrackInfo::from(&full_track("0000000000000000000001", "Track 1")),
+      TrackInfo::from(&full_track("0000000000000000000002", "Track 2")),
     ];
     app.track_table.selected_index = 0;
     app.playlist_offset = 0;
@@ -844,7 +864,7 @@ mod tests {
     app.track_table.tracks = app.library.saved_tracks.pages[0]
       .items
       .iter()
-      .map(|item| item.track.clone())
+      .map(|item| TrackInfo::from(&item.track))
       .collect();
 
     let (uris, offset) = saved_tracks_playback_request(&app).unwrap();

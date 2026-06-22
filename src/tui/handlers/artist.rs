@@ -167,7 +167,11 @@ fn handle_recommend_event_on_selected_block(app: &mut App) {
             track.id.as_ref().map(|id| vec![id.id().to_string()]);
           app.recommendations_context = Some(RecommendationsContext::Song);
           app.recommendations_seed = track.name.clone();
-          app.get_recommendations_for_seed(None, track_id_list, Some(track.clone()));
+          app.get_recommendations_for_seed(
+            None,
+            track_id_list,
+            Some(crate::core::plugin_api::TrackInfo::from(track)),
+          );
         }
       }
       ArtistBlock::RelatedArtists => {

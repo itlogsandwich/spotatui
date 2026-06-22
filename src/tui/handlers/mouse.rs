@@ -1843,8 +1843,8 @@ mod tests {
     app.push_navigation_stack(RouteId::TrackTable, ActiveBlock::TrackTable);
     app.track_table.context = Some(TrackTableContext::RecommendedTracks);
     app.track_table.tracks = vec![
-      full_track("0000000000000000000001", "Track 1"),
-      full_track("0000000000000000000002", "Track 2"),
+      crate::core::plugin_api::TrackInfo::from(&full_track("0000000000000000000001", "Track 1")),
+      crate::core::plugin_api::TrackInfo::from(&full_track("0000000000000000000002", "Track 2")),
     ];
     app.track_table.selected_index = 0;
 

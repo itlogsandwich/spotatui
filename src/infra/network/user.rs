@@ -1,6 +1,7 @@
 use super::requests::is_rate_limited_error;
 use super::Network;
 use crate::core::app::{ActiveBlock, DiscoverTimeRange, RouteId};
+use crate::core::plugin_api::TrackInfo;
 use anyhow::anyhow;
 
 use rand::seq::SliceRandom;
@@ -152,7 +153,7 @@ impl UserNetwork for Network {
     {
       Ok(page) => {
         let mut app = self.app.lock().await;
-        app.discover_top_tracks = page.items;
+        app.discover_top_tracks = page.items.iter().map(TrackInfo::from).collect();
         app.discover_loading = false;
       }
       Err(e) => {
@@ -209,7 +210,7 @@ impl UserNetwork for Network {
 
     // 4. Update state
     let mut app = self.app.lock().await;
-    app.discover_artists_mix = all_tracks;
+    app.discover_artists_mix = all_tracks.iter().map(TrackInfo::from).collect();
     app.discover_loading = false;
   }
 
