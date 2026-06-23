@@ -4,18 +4,29 @@
 //! Spotify-only: [`route_playback_event`] is called from the runtime IoEvent
 //! pump *before* `handle_network_event`. When the event targets local playback
 //! (a `file://` URI, or any transport control while a local file owns the
-//! session) it is handled here against the [`LocalPlayer`] and the event is
+//! session) it is handled here against the live [`LocalPlayer`] and the event is
 //! consumed; otherwise it falls through to the normal Spotify dispatch.
+//!
+//! ## Decoupling
+//!
+//! Local playback owns a single piece of state, [`App::local_playback`]. This
+//! module never writes Spotify/librespot fields (`native_track_info`,
+//! `song_progress_ms`, `is_streaming_active`, …): the playbar reads progress and
+//! pause state live from the player, so the two playback worlds cannot desync.
 //!
 //! ## Device ownership
 //!
 //! Only one backend holds the audio output device at a time (required on
-//! exclusive-ALSA setups, harmless on PipeWire/PulseAudio/WASAPI):
+//! exclusive-ALSA setups, harmless elsewhere). Starting local playback pauses
+//! native Spotify (librespot releases the device when its sink stops); starting
+//! Spotify tears the local session down (dropping it releases the device).
 //!
-//! * Starting local playback first pauses native Spotify (librespot releases the
-//!   device when its sink stops), then opens the local output device.
-//! * Starting Spotify playback tears the local player down (dropping it releases
-//!   the device) before the event is forwarded to the network.
+//! ## Publish-once
+//!
+//! `local_playback` is set exactly once, in the success arm of [`start_local`],
+//! *after* the source is decoding. While it is `None` neither the playbar nor
+//! the runtime tick touch local state, so the brief "opening" window is simply
+//! invisible — there is no half-initialised state for a tick to misread.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,8 +34,8 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 use super::player::LocalPlayer;
-use super::{file_uri_to_path, track_info_from_path};
-use crate::core::app::{App, NativeTrackInfo, NativeTrackKind};
+use super::{file_uri_to_path, track_info_from_path, LocalPlaybackState};
+use crate::core::app::App;
 use crate::infra::network::IoEvent;
 
 /// Whether a URI is owned by the local-files source.
@@ -44,68 +55,61 @@ pub async fn route_playback_event(app: &Arc<Mutex<App>>, event: &IoEvent) -> boo
       true
     }
     // Bare "resume current" — ours only while a local file owns the session.
-    IoEvent::StartPlayback(None, None, None) => {
-      if local_active(app).await {
-        if let Some(player) = clone_player(app).await {
-          player.resume();
-          app.lock().await.native_is_playing = Some(true);
-        }
+    IoEvent::StartPlayback(None, None, None) => match player(app).await {
+      Some(player) => {
+        player.resume();
         true
-      } else {
-        false
       }
-    }
+      None => false,
+    },
     // Any other start is a real Spotify play: relinquish the device first, then
     // let the network handle it.
     IoEvent::StartPlayback(..) => {
       teardown_local(app).await;
       false
     }
-    IoEvent::PausePlayback if would_route(app).await => {
-      if let Some(player) = clone_player(app).await {
+    IoEvent::PausePlayback => match player(app).await {
+      Some(player) => {
         player.pause();
-        app.lock().await.native_is_playing = Some(false);
+        true
       }
-      true
-    }
-    IoEvent::Seek(position_ms) if would_route(app).await => {
-      if let Some(player) = clone_player(app).await {
+      None => false,
+    },
+    IoEvent::Seek(position_ms) => match player(app).await {
+      Some(player) => {
+        // The playbar reads position live from the player, so the seek shows up
+        // on the next render with nothing else to update.
         let _ = player.seek(Duration::from_millis(*position_ms as u64));
-        app.lock().await.song_progress_ms = *position_ms as u128;
+        true
       }
-      true
-    }
-    IoEvent::ChangeVolume(volume) if would_route(app).await => {
-      if let Some(player) = clone_player(app).await {
+      None => false,
+    },
+    IoEvent::ChangeVolume(volume) => match player(app).await {
+      Some(player) => {
         player.set_volume(*volume as f32 / 100.0);
+        // Keep the playbar's volume readout in sync.
+        app.lock().await.user_config.behavior.volume_percent = *volume;
+        true
       }
-      // Keep the playbar's volume readout in sync.
-      app.lock().await.user_config.behavior.volume_percent = *volume;
-      true
-    }
+      None => false,
+    },
     // Single-file local playback has no queue yet; swallow skips so they don't
     // reach (and disturb) Spotify.
     IoEvent::NextTrack | IoEvent::PreviousTrack | IoEvent::ForcePreviousTrack => {
-      would_route(app).await
+      app.lock().await.local_playback.is_some()
     }
     _ => false,
   }
 }
 
-/// Whether a local file currently owns the playback session.
-async fn local_active(app: &Arc<Mutex<App>>) -> bool {
-  app.lock().await.is_local_playback_active
-}
-
-/// Whether a transport control should route to the local player: the session is
-/// local *and* a player handle exists.
-async fn would_route(app: &Arc<Mutex<App>>) -> bool {
-  let app = app.lock().await;
-  app.is_local_playback_active && app.local_player.is_some()
-}
-
-async fn clone_player(app: &Arc<Mutex<App>>) -> Option<Arc<LocalPlayer>> {
-  app.lock().await.local_player.clone()
+/// The live local player, if a local file currently owns the session.
+async fn player(app: &Arc<Mutex<App>>) -> Option<Arc<LocalPlayer>> {
+  app
+    .lock()
+    .await
+    .local_playback
+    .as_ref()
+    .map(|local| Arc::clone(&local.player))
 }
 
 /// Begin playing the local file at `uri`, taking over the playback session.
@@ -118,12 +122,6 @@ async fn start_local(app: &Arc<Mutex<App>>, uri: &str) {
     }
   };
 
-  // Claim the session *before* pausing librespot: pausing fires a (possibly
-  // delayed) `Stopped` event whose handler would otherwise clear the local
-  // now-playing state. The event loop suppresses librespot events while this
-  // flag is set (see infra::player::events).
-  app.lock().await.is_local_playback_active = true;
-
   // Pause native Spotify so librespot releases the output device.
   #[cfg(feature = "streaming")]
   {
@@ -133,13 +131,9 @@ async fn start_local(app: &Arc<Mutex<App>>, uri: &str) {
     }
   }
 
-  let player = match ensure_player(app).await {
+  let player = match acquire_player(app).await {
     Some(player) => player,
-    None => {
-      // Failed to open the output device: relinquish the session we claimed.
-      app.lock().await.is_local_playback_active = false;
-      return; // error already surfaced
-    }
+    None => return, // error already surfaced
   };
 
   // Tag reading and decoder construction are blocking file I/O — keep them off
@@ -154,51 +148,37 @@ async fn start_local(app: &Arc<Mutex<App>>, uri: &str) {
 
   match result {
     Ok(Ok(info)) => {
+      let volume = app.lock().await.user_config.behavior.volume_percent;
+      player.set_volume(volume as f32 / 100.0);
+
+      // Publish the session exactly once, now that the source is decoding.
       let display_name = info.name.clone();
       let mut app = app.lock().await;
-      // Match the player's output level to the app's configured volume.
-      player.set_volume(app.user_config.behavior.volume_percent as f32 / 100.0);
-      // Re-affirm the player handle and active state together, so the now-playing
-      // state published here is always consistent with the live player.
-      app.local_player = Some(Arc::clone(&player));
-      app.is_local_playback_active = true;
-      app.is_streaming_active = false;
-      app.native_is_playing = Some(true);
-      app.song_progress_ms = 0;
-      app.seek_ms = None;
-      app.native_track_info = Some(NativeTrackInfo {
+      app.local_playback = Some(LocalPlaybackState {
+        player,
         name: info.name,
-        artists_display: info.artists.join(", "),
+        artists: info.artists.join(", "),
         album: info.album,
-        duration_ms: info.duration_ms as u32,
-        kind: NativeTrackKind::Track,
+        duration_ms: info.duration_ms,
       });
       app.set_status_message(format!("\u{266a} {display_name}"), 4);
     }
-    Ok(Err(e)) => {
-      app.lock().await.is_local_playback_active = false;
-      set_error(app, format!("Cannot play local file: {e}")).await;
-    }
-    Err(e) => {
-      app.lock().await.is_local_playback_active = false;
-      set_error(app, format!("Local playback task failed: {e}")).await;
-    }
+    Ok(Err(e)) => set_error(app, format!("Cannot play local file: {e}")).await,
+    Err(e) => set_error(app, format!("Local playback task failed: {e}")).await,
   }
 }
 
-/// Return the local player, creating it (opening the output device) on first
-/// use. The device-open is blocking, so it runs on a blocking thread.
-async fn ensure_player(app: &Arc<Mutex<App>>) -> Option<Arc<LocalPlayer>> {
-  if let Some(player) = app.lock().await.local_player.clone() {
+/// Reuse the live player if a local file is already playing, otherwise open the
+/// output device for a fresh one. A freshly opened player is **not** published
+/// to `App` here — [`start_local`] publishes it only on success, so there is no
+/// window where `local_playback` is `Some` with an empty sink.
+async fn acquire_player(app: &Arc<Mutex<App>>) -> Option<Arc<LocalPlayer>> {
+  if let Some(player) = player(app).await {
     return Some(player);
   }
 
   match tokio::task::spawn_blocking(LocalPlayer::new).await {
-    Ok(Ok(player)) => {
-      let player = Arc::new(player);
-      app.lock().await.local_player = Some(Arc::clone(&player));
-      Some(player)
-    }
+    Ok(Ok(player)) => Some(Arc::new(player)),
     Ok(Err(e)) => {
       set_error(app, format!("No audio output for local playback: {e}")).await;
       None
@@ -210,19 +190,12 @@ async fn ensure_player(app: &Arc<Mutex<App>>) -> Option<Arc<LocalPlayer>> {
   }
 }
 
-/// Stop and drop the local player (releasing the device) and clear local
-/// playback state, if it was active.
+/// End the local session, releasing the output device.
 async fn teardown_local(app: &Arc<Mutex<App>>) {
-  let mut app = app.lock().await;
-  if let Some(player) = app.local_player.take() {
-    player.stop();
-    // `player` is dropped at end of scope; if it was the last reference the
-    // keepalive thread exits and the output device is released.
-  }
-  if app.is_local_playback_active {
-    app.is_local_playback_active = false;
-    app.native_track_info = None;
-    app.song_progress_ms = 0;
+  if let Some(local) = app.lock().await.local_playback.take() {
+    local.player.stop();
+    // `local` is dropped here; if it held the last reference the keepalive
+    // thread exits and the output device is released.
   }
 }
 

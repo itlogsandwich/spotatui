@@ -749,19 +749,46 @@ fn draw_lyrics(f: &mut Frame<'_>, app: &App, area: Rect) {
   }
 }
 
+/// Display snapshot for the local-file playbar.
+///
+/// Extracted from the live player so [`render_local_playbar`] is a pure function
+/// of plain values and can be unit-tested with `TestBackend` (no audio device).
+#[cfg(feature = "local-files")]
+struct LocalPlaybarView {
+  name: String,
+  artists: String,
+  is_playing: bool,
+  position_ms: u128,
+  duration_ms: u64,
+  volume_percent: u8,
+}
+
 /// Render the playbar for an active local-file playback session.
 ///
-/// Local playback has no Spotify `current_playback_context`, so it gets a
-/// dedicated render path driven entirely by [`App::native_track_info`] and
-/// [`App::song_progress_ms`] (no rspotify types involved).
+/// Local playback has no Spotify `current_playback_context`; it renders from its
+/// own [`App::local_playback`] state, reading progress and pause state **live**
+/// from the player so they never desync from what is actually playing.
+#[cfg(feature = "local-files")]
 fn draw_local_playbar(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
-  let Some(native_info) = app.native_track_info.as_ref() else {
+  let Some(local) = app.local_playback.as_ref() else {
     return;
   };
+  let view = LocalPlaybarView {
+    name: local.name.clone(),
+    artists: local.artists.clone(),
+    is_playing: !local.player.is_paused(),
+    position_ms: local.player.position().as_millis(),
+    duration_ms: local.duration_ms,
+    volume_percent: app.user_config.behavior.volume_percent,
+  };
+  render_local_playbar(f, app, layout_chunk, &view);
+}
+
+#[cfg(feature = "local-files")]
+fn render_local_playbar(f: &mut Frame<'_>, app: &App, layout_chunk: Rect, view: &LocalPlaybarView) {
   let playbar_areas = playbar_layout_areas(app, layout_chunk);
 
-  let is_playing = app.native_is_playing.unwrap_or(true);
-  let play_title = if is_playing { "Playing" } else { "Paused" };
+  let play_title = if view.is_playing { "Playing" } else { "Paused" };
 
   let current_route = app.get_current_route();
   let highlight_state = (
@@ -777,7 +804,7 @@ fn draw_local_playbar(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
 
   let title = format!(
     "{:-7} (Local | Volume: {:-2}%)",
-    play_title, app.user_config.behavior.volume_percent
+    play_title, view.volume_percent
   );
   let mut title_spans = vec![Span::styled(
     title,
@@ -801,14 +828,14 @@ fn draw_local_playbar(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
   f.render_widget(title_block, layout_chunk);
 
   let lines = Text::from(Span::styled(
-    native_info.artists_display.clone(),
+    view.artists.clone(),
     Style::default().fg(app.user_config.theme.playbar_text),
   ));
   let artist = Paragraph::new(lines)
     .style(Style::default().fg(app.user_config.theme.playbar_text))
     .block(
       Block::default().title(Span::styled(
-        native_info.name.clone(),
+        view.name.clone(),
         Style::default()
           .fg(app.user_config.theme.selected)
           .add_modifier(Modifier::BOLD),
@@ -818,10 +845,9 @@ fn draw_local_playbar(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
 
   draw_playbar_controls(f, app, playbar_areas.controls_area);
 
-  let progress_ms = app.seek_ms.unwrap_or(app.song_progress_ms);
-  let duration_std = std::time::Duration::from_millis(native_info.duration_ms as u64);
-  let perc = get_track_progress_percentage(progress_ms, duration_std);
-  let song_progress_label = display_track_progress(progress_ms, duration_std);
+  let duration_std = std::time::Duration::from_millis(view.duration_ms);
+  let perc = get_track_progress_percentage(view.position_ms, duration_std);
+  let song_progress_label = display_track_progress(view.position_ms, duration_std);
   let modifier = if app.user_config.behavior.enable_text_emphasis {
     Modifier::ITALIC | Modifier::BOLD
   } else {
@@ -851,7 +877,8 @@ fn draw_local_playbar(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
 pub fn draw_playbar(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
   // Local-file playback owns the session and has no Spotify context to render
   // from, so it takes a dedicated path.
-  if app.is_local_playback_active {
+  #[cfg(feature = "local-files")]
+  if app.local_playback.is_some() {
     draw_local_playbar(f, app, layout_chunk);
     return;
   }
@@ -1423,5 +1450,72 @@ mod tests {
     let zero_height = playbar_cover_layout(Rect::new(4, 5, 10, 0), 100);
     assert_eq!(zero_height.slot, Rect::new(4, 5, 0, 0));
     assert_eq!(zero_height.text_area, Rect::new(4, 5, 10, 0));
+  }
+
+  /// Collect every rendered cell symbol in `area` into one string for substring
+  /// assertions.
+  #[cfg(feature = "local-files")]
+  fn rendered_text(area: Rect, view: &LocalPlaybarView) -> String {
+    use ratatui::{backend::TestBackend, Terminal};
+
+    let app = App::default();
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+    terminal
+      .draw(|f| render_local_playbar(f, &app, area, view))
+      .unwrap();
+    let buffer = terminal.backend().buffer();
+    (0..area.height)
+      .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+      .filter_map(|(x, y)| buffer.cell((x, y)).map(|c| c.symbol().to_string()))
+      .collect()
+  }
+
+  /// Regression guard for the "blank playbar / frozen progress" bugs: with a
+  /// live position the renderer must show the track name, the playing state, and
+  /// the elapsed/total time — none of which require an audio device to verify.
+  #[cfg(feature = "local-files")]
+  #[test]
+  fn local_playbar_renders_name_state_and_progress() {
+    let view = LocalPlaybarView {
+      name: "My Local Song".to_string(),
+      artists: "Some Artist".to_string(),
+      is_playing: true,
+      position_ms: 60_000,  // 1:00
+      duration_ms: 311_811, // 5:11
+      volume_percent: 80,
+    };
+    let content = rendered_text(Rect::new(0, 0, 160, 6), &view);
+
+    assert!(
+      content.contains("My Local Song"),
+      "track name should render: {content}"
+    );
+    assert!(
+      content.contains("Playing"),
+      "should show Playing: {content}"
+    );
+    assert!(
+      content.contains("1:00"),
+      "elapsed should show 1:00 at a 60s position: {content}"
+    );
+    assert!(
+      content.contains("5:11"),
+      "total duration should show 5:11: {content}"
+    );
+  }
+
+  #[cfg(feature = "local-files")]
+  #[test]
+  fn local_playbar_shows_paused_state() {
+    let view = LocalPlaybarView {
+      name: "Track".to_string(),
+      artists: "Artist".to_string(),
+      is_playing: false,
+      position_ms: 0,
+      duration_ms: 200_000,
+      volume_percent: 50,
+    };
+    let content = rendered_text(Rect::new(0, 0, 160, 6), &view);
+    assert!(content.contains("Paused"), "should show Paused: {content}");
   }
 }

@@ -12,6 +12,25 @@ pub mod dispatch;
 pub mod player;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use self::player::LocalPlayer;
+
+/// The active local-file playback session.
+///
+/// Holds the live [`LocalPlayer`] plus the *static* track metadata. Dynamic
+/// state (position, paused) is read live from `player` at render time, so it is
+/// never mirrored into — and therefore never desynced from — Spotify/librespot
+/// state fields. `App` holds this in a single `Option`: `Some` exactly while a
+/// local file owns the playback session.
+pub struct LocalPlaybackState {
+  pub player: Arc<LocalPlayer>,
+  pub name: String,
+  /// Display string of the joined artist names.
+  pub artists: String,
+  pub album: String,
+  pub duration_ms: u64,
+}
 
 use anyhow::{Context, Result};
 use lofty::file::TaggedFileExt;

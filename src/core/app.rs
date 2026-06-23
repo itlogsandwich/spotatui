@@ -881,10 +881,6 @@ pub struct App {
   /// Device id for the native streaming device when known
   #[allow(dead_code)]
   pub native_device_id: Option<String>,
-  /// Whether a local file is the active playback session (multi-source Phase 3).
-  /// When true, the playbar, progress, and transport controls are driven by
-  /// [`local_player`](Self::local_player) instead of Spotify state.
-  pub is_local_playback_active: bool,
   /// A `file://` URI to start playing once the UI is up (set from `--play-file`).
   /// Consumed and cleared on first render.
   pub pending_play_file: Option<String>,
@@ -979,10 +975,13 @@ pub struct App {
   /// Reference to the native streaming player for direct control (bypasses event channel)
   #[cfg(feature = "streaming")]
   pub streaming_player: Option<Arc<crate::infra::player::StreamingPlayer>>,
-  /// Local-file audio player, created lazily on first local playback and dropped
-  /// when switching back to Spotify (so it releases the output device).
+  /// The active local-file playback session (multi-source Phase 3), or `None`
+  /// when Spotify owns playback. Decoupled from Spotify/librespot state: the
+  /// local playbar reads progress and pause state live from the player here, so
+  /// librespot events and polls never desync it. `Some` exactly while a local
+  /// file is playing; dropping it releases the audio output device.
   #[cfg(feature = "local-files")]
-  pub local_player: Option<Arc<crate::infra::local::player::LocalPlayer>>,
+  pub local_playback: Option<crate::infra::local::LocalPlaybackState>,
   /// Sender used to recover native streaming when a stale/disconnected player is detected.
   #[cfg(feature = "streaming")]
   pub streaming_recovery_tx:
@@ -1170,7 +1169,6 @@ impl Default for App {
       native_track_info: None,
       is_streaming_active: false,
       native_device_id: None,
-      is_local_playback_active: false,
       pending_play_file: None,
       native_is_playing: None,
       native_playback_origin: None,
@@ -1215,7 +1213,7 @@ impl Default for App {
       #[cfg(feature = "streaming")]
       streaming_player: None,
       #[cfg(feature = "local-files")]
-      local_player: None,
+      local_playback: None,
       #[cfg(feature = "streaming")]
       streaming_recovery_tx: None,
       #[cfg(all(feature = "mpris", target_os = "linux"))]
@@ -2298,18 +2296,14 @@ impl App {
   }
 
   pub fn toggle_playback(&mut self) {
-    // Local-file playback owns the session: toggle the local sink directly for
-    // instant response, and update the playbar's play/pause state immediately.
+    // Local-file playback owns the session: toggle the local sink directly. The
+    // playbar reads pause state live from the player, so nothing else to update.
     #[cfg(feature = "local-files")]
-    if self.is_local_playback_active {
-      if let Some(player) = &self.local_player {
-        if player.is_paused() {
-          player.resume();
-          self.native_is_playing = Some(true);
-        } else {
-          player.pause();
-          self.native_is_playing = Some(false);
-        }
+    if let Some(local) = &self.local_playback {
+      if local.player.is_paused() {
+        local.player.resume();
+      } else {
+        local.player.pause();
       }
       return;
     }
