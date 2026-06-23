@@ -688,17 +688,20 @@ pub async fn start_ui(
         }
 
         // Local-file playback drives its own progress from the rodio sink, and
-        // self-clears when the track plays to completion.
+        // self-clears when the track plays to completion. An *empty* sink means
+        // "finished" only when not paused: a freshly created player is paused
+        // with an empty sink during the brief window before the first source is
+        // appended, and that must not be mistaken for end-of-track.
         #[cfg(feature = "local-files")]
         if app.is_local_playback_active {
           if let Some(player) = app.local_player.clone() {
-            if player.is_finished() {
+            if player.is_finished() && !player.is_paused() {
               app.is_local_playback_active = false;
               app.native_track_info = None;
               app.native_is_playing = Some(false);
               app.song_progress_ms = 0;
               app.local_player = None; // drop releases the output device
-            } else {
+            } else if !player.is_paused() {
               app.song_progress_ms = player.position().as_millis();
             }
           }

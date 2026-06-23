@@ -158,6 +158,9 @@ async fn start_local(app: &Arc<Mutex<App>>, uri: &str) {
       let mut app = app.lock().await;
       // Match the player's output level to the app's configured volume.
       player.set_volume(app.user_config.behavior.volume_percent as f32 / 100.0);
+      // Re-affirm the player handle and active state together, so the now-playing
+      // state published here is always consistent with the live player.
+      app.local_player = Some(Arc::clone(&player));
       app.is_local_playback_active = true;
       app.is_streaming_active = false;
       app.native_is_playing = Some(true);
