@@ -61,6 +61,44 @@ struct AlbumUi {
   title: String,
 }
 
+/// Render the Local Files folder browser: a selectable list of folders (one per
+/// subdirectory of the configured music directory), each with its track count.
+pub fn draw_local_browser(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
+  let current_route = app.get_current_route();
+  let highlight_state = (
+    current_route.active_block == ActiveBlock::LocalBrowser,
+    current_route.hovered_block == ActiveBlock::LocalBrowser,
+  );
+
+  let items: Vec<String> = app
+    .local_playlists
+    .iter()
+    .map(|folder| {
+      if folder.track_count > 0 {
+        format!("{} ({} tracks)", folder.name, folder.track_count)
+      } else {
+        folder.name.clone()
+      }
+    })
+    .collect();
+
+  let title = if app.local_playlists.is_empty() {
+    "Local Files (no folders — set behavior.local_music_path)"
+  } else {
+    "Local Files"
+  };
+
+  super::util::draw_selectable_list(
+    f,
+    app,
+    layout_chunk,
+    title,
+    &items,
+    highlight_state,
+    Some(app.local_playlists_index),
+  );
+}
+
 pub fn draw_artist_table(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
   let header = TableHeader {
     id: TableId::Artist,

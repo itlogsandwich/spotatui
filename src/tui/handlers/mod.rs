@@ -18,6 +18,7 @@ mod help_menu;
 mod home;
 mod input;
 mod library;
+mod local_browser;
 mod lyrics_view;
 mod miniplayer;
 mod mouse;
@@ -420,6 +421,9 @@ fn handle_block_events(key: Key, app: &mut App) {
     }
     ActiveBlock::Artists => {
       artists::handler(key, app);
+    }
+    ActiveBlock::LocalBrowser => {
+      local_browser::handler(key, app);
     }
     ActiveBlock::Discover => {
       discover::handler(key, app);

@@ -155,6 +155,14 @@ pub enum IoEvent {
   UnfollowFriend(String),
   /// Search spotatui.com users by display name or friend code
   SearchFriendUsers(String),
+  /// List the folders under the configured local music directory (handled by
+  /// `infra::local::dispatch`; a no-op on the Spotify network).
+  GetLocalPlaylists,
+  /// List the audio files in a local folder, identified by its `file://` URI.
+  /// The URI is only read by `infra::local::dispatch` (the `local-files`
+  /// feature); without it the event is an inert no-op.
+  #[cfg_attr(not(feature = "local-files"), allow(dead_code))]
+  GetLocalTracks(String),
 }
 
 pub struct Network {
@@ -508,6 +516,9 @@ impl Network {
       IoEvent::SearchFriendUsers(query) => {
         friends::handle_search_friend_users(self, query).await;
       }
+      // Local-files browse events are handled by infra::local::dispatch before
+      // reaching the network; they only arrive here when the feature is off.
+      IoEvent::GetLocalPlaylists | IoEvent::GetLocalTracks(_) => {}
     };
 
     {

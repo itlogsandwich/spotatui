@@ -762,6 +762,7 @@ pub struct BehaviorConfigString {
   pub keepawake_enabled: Option<bool>,
   pub enable_media_keys: Option<bool>,
   pub sync_token: Option<String>,
+  pub local_music_path: Option<String>,
 }
 
 #[derive(Clone)]
@@ -811,6 +812,9 @@ pub struct BehaviorConfig {
   /// It still publishes track metadata to the OS; it just stops reacting.
   pub enable_media_keys: bool,
   pub sync_token: Option<String>,
+  /// Filesystem path to the local music library root (browsed by the Local
+  /// Files screen). Defaults to the OS music directory; `None` if unavailable.
+  pub local_music_path: Option<String>,
 }
 
 #[derive(Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -943,6 +947,7 @@ impl UserConfig {
         keepawake_enabled: true,
         enable_media_keys: true,
         sync_token: None,
+        local_music_path: dirs::audio_dir().map(|p| p.to_string_lossy().to_string()),
       },
       path_to_config: None,
     }
@@ -1297,6 +1302,14 @@ impl UserConfig {
     if let Some(enable_media_keys) = behavior_config.enable_media_keys {
       self.behavior.enable_media_keys = enable_media_keys;
     }
+    if let Some(local_music_path) = behavior_config.local_music_path {
+      let trimmed = local_music_path.trim();
+      self.behavior.local_music_path = if trimmed.is_empty() {
+        None
+      } else {
+        Some(trimmed.to_string())
+      };
+    }
     Ok(())
   }
 
@@ -1446,6 +1459,7 @@ impl UserConfig {
       dismissed_announcements: Some(self.behavior.dismissed_announcements.clone()),
       relay_server_url: Some(self.behavior.relay_server_url.clone()),
       sync_token: self.behavior.sync_token.clone(),
+      local_music_path: self.behavior.local_music_path.clone(),
       stop_after_current_track: Some(self.behavior.stop_after_current_track),
       sidebar_width_percent: Some(self.behavior.sidebar_width_percent),
       playbar_height_rows: Some(self.behavior.playbar_height_rows),

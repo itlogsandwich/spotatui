@@ -39,6 +39,20 @@ use rspotify::model::{
   DeviceType,
 };
 
+/// Sidebar library entries. The "Local Files" entry only appears when the
+/// `local-files` feature is built in (otherwise there is nothing to browse).
+#[cfg(feature = "local-files")]
+pub const LIBRARY_OPTIONS: [&str; 8] = [
+  "Discover",
+  "Recently Played",
+  "Friends",
+  "Liked Songs",
+  "Albums",
+  "Artists",
+  "Podcasts",
+  "Local Files",
+];
+#[cfg(not(feature = "local-files"))]
 pub const LIBRARY_OPTIONS: [&str; 7] = [
   "Discover",
   "Recently Played",
@@ -264,6 +278,7 @@ pub enum ActiveBlock {
   Party,
   CreatePlaylistForm,
   Friends,
+  LocalBrowser,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -303,6 +318,7 @@ pub enum RouteId {
   Party,
   CreatePlaylist,
   Friends,
+  LocalBrowser,
 }
 
 // ── Friends feature ───────────────────────────────────────────────────────────
@@ -385,6 +401,7 @@ pub enum TrackTableContext {
   SavedTracks,
   RecommendedTracks,
   DiscoverPlaylist,
+  LocalPlaylist,
 }
 
 // Is it possible to compose enums?
@@ -841,6 +858,10 @@ pub struct App {
   pub user: Option<UserInfo>,
   pub album_list_index: usize,
   pub artists_list_index: usize,
+  /// Folders (one per subdirectory of the configured music dir) shown by the
+  /// Local Files browser, and the cursor within that list.
+  pub local_playlists: Vec<PlaylistInfo>,
+  pub local_playlists_index: usize,
   pub clipboard: Option<Clipboard>,
   pub shows_list_index: usize,
   pub episode_list_index: usize,
@@ -1058,6 +1079,8 @@ impl Default for App {
       discover_time_range: DiscoverTimeRange::default(),
       discover_loading: false,
       artists_list_index: 0,
+      local_playlists: Vec::new(),
+      local_playlists_index: 0,
       shows_list_index: 0,
       episode_list_index: 0,
       artists: vec![],

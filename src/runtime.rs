@@ -1322,7 +1322,7 @@ async fn start_tokio(io_rx: std::sync::mpsc::Receiver<IoEvent>, network: &mut Ne
         let handled_locally = {
           #[cfg(feature = "local-files")]
           {
-            crate::infra::local::dispatch::route_playback_event(&network.app, &io_event).await
+            crate::infra::local::dispatch::route_local_event(&network.app, &io_event).await
           }
           #[cfg(not(feature = "local-files"))]
           {

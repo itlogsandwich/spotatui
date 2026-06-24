@@ -77,6 +77,12 @@ pub fn handler(key: Key, app: &mut App) {
         app.dispatch(IoEvent::GetCurrentUserSavedShows(None));
         app.push_navigation_stack(RouteId::Podcasts, ActiveBlock::Podcasts);
       }
+      // Local Files (only present when the `local-files` feature is built in)
+      7 => {
+        app.local_playlists_index = 0;
+        app.dispatch(IoEvent::GetLocalPlaylists);
+        app.push_navigation_stack(RouteId::LocalBrowser, ActiveBlock::LocalBrowser);
+      }
       // This is required because Rust can't tell if this pattern is exhaustive
       _ => {}
     },

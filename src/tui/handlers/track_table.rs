@@ -96,6 +96,8 @@ pub fn handler(key: Key, app: &mut App) {
           }
           TrackTableContext::AlbumSearch => {}
           TrackTableContext::DiscoverPlaylist => {}
+          // Local folders have no pagination.
+          TrackTableContext::LocalPlaylist => {}
         }
       };
     }
@@ -112,6 +114,8 @@ pub fn handler(key: Key, app: &mut App) {
           }
           TrackTableContext::AlbumSearch => {}
           TrackTableContext::DiscoverPlaylist => {}
+          // Local folders have no pagination.
+          TrackTableContext::LocalPlaylist => {}
         }
       };
     }
@@ -252,6 +256,23 @@ fn play_random_song(app: &mut App) {
           ));
         }
       }
+      TrackTableContext::LocalPlaylist => {
+        // Single-file local playback: play one random track from the folder.
+        let playable_ids: Vec<String> = app
+          .track_table
+          .tracks
+          .iter()
+          .filter_map(|track| track.uri.clone())
+          .collect();
+        if !playable_ids.is_empty() {
+          let rand_idx = thread_rng().gen_range(0..playable_ids.len());
+          app.dispatch(IoEvent::StartPlayback(
+            Some(playable_ids[rand_idx].clone()),
+            None,
+            None,
+          ));
+        }
+      }
     }
   };
 }
@@ -374,6 +395,15 @@ fn on_enter(app: &mut App) {
           ));
         }
       }
+      TrackTableContext::LocalPlaylist => {
+        // Single-file local playback: play just the selected track by its
+        // file:// URI (routed to the local player by infra::local::dispatch).
+        if let Some(track) = tracks.get(*selected_index) {
+          if let Some(playable_id) = track.uri.clone() {
+            app.dispatch(IoEvent::StartPlayback(Some(playable_id), None, None));
+          }
+        }
+      }
     }
   };
 }
@@ -415,6 +445,8 @@ fn on_queue(app: &mut App) {
           }
         }
       }
+      // Local playback has no queue yet.
+      TrackTableContext::LocalPlaylist => {}
     }
   };
 }

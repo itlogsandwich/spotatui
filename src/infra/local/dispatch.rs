@@ -1,11 +1,11 @@
 //! Local-file playback routing.
 //!
 //! This is the seam that keeps the Spotify [`Network`](crate::infra::network)
-//! Spotify-only: [`route_playback_event`] is called from the runtime IoEvent
-//! pump *before* `handle_network_event`. When the event targets local playback
-//! (a `file://` URI, or any transport control while a local file owns the
-//! session) it is handled here against the live [`LocalPlayer`] and the event is
-//! consumed; otherwise it falls through to the normal Spotify dispatch.
+//! Spotify-only: [`route_local_event`] is called from the runtime IoEvent pump
+//! *before* `handle_network_event`. When the event targets local files (a
+//! `file://` playback URI, a transport control while a local file owns the
+//! session, or a browse request) it is handled here and consumed; otherwise it
+//! falls through to the normal Spotify dispatch.
 //!
 //! ## Decoupling
 //!
@@ -34,8 +34,9 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 use super::player::LocalPlayer;
-use super::{file_uri_to_path, track_info_from_path, LocalPlaybackState};
-use crate::core::app::App;
+use super::{file_uri_to_path, track_info_from_path, LocalPlaybackState, LocalSource};
+use crate::core::app::{App, TrackTableContext};
+use crate::core::source::MediaSource;
 use crate::infra::network::IoEvent;
 
 /// Whether a URI is owned by the local-files source.
@@ -47,8 +48,17 @@ fn is_file_uri(uri: &str) -> bool {
 ///
 /// Returns `true` if the event was handled locally (and must **not** be
 /// forwarded to the Spotify network), `false` to let the normal dispatch run.
-pub async fn route_playback_event(app: &Arc<Mutex<App>>, event: &IoEvent) -> bool {
+pub async fn route_local_event(app: &Arc<Mutex<App>>, event: &IoEvent) -> bool {
   match event {
+    // Browse: scan the configured music directory and a folder's tracks.
+    IoEvent::GetLocalPlaylists => {
+      load_local_playlists(app).await;
+      true
+    }
+    IoEvent::GetLocalTracks(uri) => {
+      load_local_tracks(app, uri).await;
+      true
+    }
     // Start playing a local file.
     IoEvent::StartPlayback(Some(uri), _, _) if is_file_uri(uri) => {
       start_local(app, uri).await;
@@ -201,4 +211,70 @@ async fn teardown_local(app: &Arc<Mutex<App>>) {
 
 async fn set_error(app: &Arc<Mutex<App>>, message: String) {
   app.lock().await.set_status_message(message, 6);
+}
+
+/// The configured music-library root, or `None` (with a status message) if it
+/// is unset.
+async fn music_root(app: &Arc<Mutex<App>>) -> Option<String> {
+  let root = app
+    .lock()
+    .await
+    .user_config
+    .behavior
+    .local_music_path
+    .clone();
+  if root.is_none() {
+    set_error(
+      app,
+      "No local music folder configured (set behavior.local_music_path)".to_string(),
+    )
+    .await;
+  }
+  root
+}
+
+/// Scan the music root's immediate subdirectories into `app.local_playlists`.
+///
+/// `LocalSource`'s methods are async but do blocking filesystem I/O, so they run
+/// on the blocking pool (via `block_on`) rather than stalling the executor.
+async fn load_local_playlists(app: &Arc<Mutex<App>>) {
+  let Some(root) = music_root(app).await else {
+    return;
+  };
+  let result = tokio::task::spawn_blocking(move || {
+    futures::executor::block_on(LocalSource::new(root).playlists())
+  })
+  .await;
+  match result {
+    Ok(Ok(playlists)) => {
+      let mut app = app.lock().await;
+      app.local_playlists = playlists;
+      app.local_playlists_index = 0;
+    }
+    Ok(Err(e)) => set_error(app, format!("Cannot scan music folder: {e}")).await,
+    Err(e) => set_error(app, format!("Local folder scan failed: {e}")).await,
+  }
+}
+
+/// Scan a folder's audio files into the shared track table (tagged as
+/// [`TrackTableContext::LocalPlaylist`] so selecting a row plays the file).
+async fn load_local_tracks(app: &Arc<Mutex<App>>, playlist_uri: &str) {
+  let Some(root) = music_root(app).await else {
+    return;
+  };
+  let uri = playlist_uri.to_string();
+  let result = tokio::task::spawn_blocking(move || {
+    futures::executor::block_on(LocalSource::new(root).tracks(&uri))
+  })
+  .await;
+  match result {
+    Ok(Ok(tracks)) => {
+      let mut app = app.lock().await;
+      app.track_table.tracks = tracks;
+      app.track_table.selected_index = 0;
+      app.track_table.context = Some(TrackTableContext::LocalPlaylist);
+    }
+    Ok(Err(e)) => set_error(app, format!("Cannot read folder: {e}")).await,
+    Err(e) => set_error(app, format!("Local track scan failed: {e}")).await,
+  }
 }
