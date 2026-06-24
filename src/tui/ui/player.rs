@@ -1,6 +1,7 @@
 use crate::core::{
-  app::{ActiveBlock, App},
+  app::{ActiveBlock, App, SourceFocus},
   layout::{fullscreen_view_layout, miniplayer_playbar_area},
+  source::Source,
 };
 use ratatui::{
   layout::{Alignment, Constraint, Layout, Position, Rect},
@@ -1186,29 +1187,39 @@ pub fn draw_playbar(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
   }
 }
 
+/// The combined Source & Device picker (the `d` screen): a Source panel
+/// (Spotify / Local Files) stacked above the existing Spotify Connect device
+/// list. `Tab` toggles focus; the Devices panel is dimmed when Local is active.
 pub fn draw_device_list(f: &mut Frame<'_>, app: &App) {
-  let [instructions_area, list_area] = f
-    .area()
-    .layout(&Layout::vertical([Constraint::Percentage(20), Constraint::Percentage(80)]).margin(5));
+  // A small margin (rather than the device screen's old 5) keeps the fixed
+  // instructions + Source panel from squeezing the Devices list off-screen on
+  // shorter terminals: instructions(7) + source(4) + devices(>=3) fits from ~18
+  // rows up.
+  let [instructions_area, source_area, devices_area] = f.area().layout(
+    &Layout::vertical([
+      Constraint::Length(7),
+      Constraint::Length(Source::ALL.len() as u16 + 2),
+      Constraint::Min(3),
+    ])
+    .margin(2),
+  );
 
   let move_instructions = format!(
-    "Use `{}`/`{}` or up/down arrow keys to move up and down and <Enter> to select. ",
+    "Use `{}`/`{}` or arrow keys to move, `Tab` to switch panels, <Enter> to select.",
     app.user_config.keys.move_down, app.user_config.keys.move_up,
   );
-  let device_instructions: Vec<Line> = vec![
+  let instructions_text: Vec<Line> = vec![
     Line::from(Span::raw(
-      "To play tracks, please select a device. ",
+      "Choose your music source and Spotify playback device.",
     )),
     Line::from(Span::raw(move_instructions)),
     Line::from(Span::raw(
-      "Your choice here will be cached so you can jump straight back in when you next open `spotatui`. ",
+      "Your choices are cached so you can jump straight back in when you next open `spotatui`.",
     )),
-    Line::from(Span::raw(
-      "You can change the playback device at any time by pressing `d`.",
-    )),
+    Line::from(Span::raw("Reopen this screen any time by pressing `d`.")),
   ];
 
-  let instructions = Paragraph::new(device_instructions)
+  let instructions = Paragraph::new(instructions_text)
     .style(Style::default().fg(app.user_config.theme.text))
     .wrap(Wrap { trim: true })
     .block(
@@ -1221,35 +1232,45 @@ pub fn draw_device_list(f: &mut Frame<'_>, app: &App) {
     );
   f.render_widget(instructions, instructions_area);
 
-  let no_device_message = Span::raw("No devices found: Make sure a device is active");
-
-  let items = match &app.devices {
-    Some(items) => {
-      if items.devices.is_empty() {
-        vec![ListItem::new(no_device_message)]
-      } else {
-        items
-          .devices
-          .iter()
-          .map(|device| ListItem::new(Span::raw(&device.name)))
-          .collect()
-      }
-    }
-    None => vec![ListItem::new(no_device_message)],
+  // --- Source panel ---
+  let source_focused = app.source_device_focus == SourceFocus::Source;
+  let source_border = if source_focused {
+    app.user_config.theme.active
+  } else {
+    app.user_config.theme.inactive
   };
-
-  let mut state = ListState::default();
-  state.select(app.selected_device_index);
-  let list = List::new(items)
+  let source_items: Vec<ListItem> = Source::ALL
+    .iter()
+    .map(|s| {
+      let is_active = *s == app.active_source;
+      let marker = if is_active { "●" } else { " " };
+      let suffix = if is_active { "  (active)" } else { "" };
+      let style = if is_active {
+        Style::default()
+          .fg(app.user_config.theme.active)
+          .add_modifier(Modifier::BOLD)
+      } else {
+        app.user_config.theme.base_style()
+      };
+      ListItem::new(Span::styled(
+        format!("{} {}{}", marker, s.label(), suffix),
+        style,
+      ))
+    })
+    .collect();
+  let mut source_state = ListState::default();
+  // Only the focused panel shows the moving cursor; the active source is always
+  // marked with `●` regardless of focus.
+  if source_focused {
+    source_state.select(Some(app.source_list_index));
+  }
+  let source_list = List::new(source_items)
     .block(
       Block::default()
-        .title(Span::styled(
-          "Devices",
-          Style::default().fg(app.user_config.theme.active),
-        ))
+        .title(Span::styled("Source", Style::default().fg(source_border)))
         .borders(Borders::ALL)
         .style(app.user_config.theme.base_style())
-        .border_style(Style::default().fg(app.user_config.theme.inactive)),
+        .border_style(Style::default().fg(source_border)),
     )
     .style(app.user_config.theme.base_style())
     .highlight_style(
@@ -1259,7 +1280,61 @@ pub fn draw_device_list(f: &mut Frame<'_>, app: &App) {
         .add_modifier(Modifier::BOLD),
     )
     .highlight_symbol(Line::from("▶ ").style(Style::default().fg(app.user_config.theme.active)));
-  f.render_stateful_widget(list, list_area, &mut state);
+  f.render_stateful_widget(source_list, source_area, &mut source_state);
+
+  // --- Devices panel (Spotify Connect only) ---
+  let local_active = app.active_source == Source::Local;
+  let devices_focused = app.source_device_focus == SourceFocus::Devices && !local_active;
+  let devices_color = if devices_focused {
+    app.user_config.theme.active
+  } else {
+    app.user_config.theme.inactive
+  };
+  let devices_title = if local_active {
+    "Devices (Spotify only)"
+  } else {
+    "Devices"
+  };
+  let device_text_style = if local_active {
+    Style::default().fg(app.user_config.theme.inactive)
+  } else {
+    app.user_config.theme.base_style()
+  };
+
+  let no_device_message = Span::raw("No devices found: Make sure a device is active");
+  let items: Vec<ListItem> = match &app.devices {
+    Some(payload) if !payload.devices.is_empty() => payload
+      .devices
+      .iter()
+      .map(|device| ListItem::new(Span::raw(device.name.clone())))
+      .collect(),
+    _ => vec![ListItem::new(no_device_message)],
+  };
+
+  let mut state = ListState::default();
+  if devices_focused {
+    state.select(app.selected_device_index);
+  }
+  let device_list = List::new(items)
+    .block(
+      Block::default()
+        .title(Span::styled(
+          devices_title,
+          Style::default().fg(devices_color),
+        ))
+        .borders(Borders::ALL)
+        .style(device_text_style)
+        .border_style(Style::default().fg(devices_color)),
+    )
+    .style(device_text_style)
+    .highlight_style(
+      Style::default()
+        .fg(app.user_config.theme.active)
+        .bg(app.user_config.theme.inactive)
+        .add_modifier(Modifier::BOLD),
+    )
+    .highlight_symbol(Line::from("▶ ").style(Style::default().fg(app.user_config.theme.active)));
+  f.render_stateful_widget(device_list, devices_area, &mut state);
 }
 
 #[cfg(test)]
@@ -1517,5 +1592,62 @@ mod tests {
     };
     let content = rendered_text(Rect::new(0, 0, 160, 6), &view);
     assert!(content.contains("Paused"), "should show Paused: {content}");
+  }
+
+  fn render_picker(app: &App, w: u16, h: u16) -> String {
+    use ratatui::{backend::TestBackend, Terminal};
+    let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+    terminal.draw(|f| draw_device_list(f, app)).unwrap();
+    let buffer = terminal.backend().buffer();
+    (0..h)
+      .flat_map(|y| (0..w).map(move |x| (x, y)))
+      .filter_map(|(x, y)| buffer.cell((x, y)).map(|c| c.symbol().to_string()))
+      .collect()
+  }
+
+  #[test]
+  fn source_picker_lists_both_sources_and_marks_active() {
+    let app = App::default(); // Spotify is the default active source
+    let content = render_picker(&app, 60, 28);
+    assert!(
+      content.contains("Spotify"),
+      "Spotify source row should render: {content}"
+    );
+    assert!(
+      content.contains("Local Files"),
+      "Local Files source row should render: {content}"
+    );
+    assert!(
+      content.contains("(active)"),
+      "the active source should be marked: {content}"
+    );
+    // Spotify active: the Devices panel is the normal, non-dimmed title.
+    assert!(
+      !content.contains("Spotify only"),
+      "devices title should be plain when Spotify is active: {content}"
+    );
+  }
+
+  #[test]
+  fn source_picker_devices_title_notes_spotify_only_under_local() {
+    let mut app = App::default();
+    app.active_source = Source::Local;
+    let content = render_picker(&app, 60, 28);
+    assert!(
+      content.contains("Spotify only"),
+      "devices title should note Spotify-only when Local is active: {content}"
+    );
+  }
+
+  #[test]
+  fn source_picker_keeps_source_panel_on_short_terminal() {
+    // Fixed instructions + Source panel must not squeeze the Source list off a
+    // short terminal (the reason the margin was trimmed from 5 to 2).
+    let app = App::default();
+    let content = render_picker(&app, 40, 18);
+    assert!(
+      content.contains("Spotify") && content.contains("Local Files"),
+      "both source rows should still render at 40x18: {content}"
+    );
   }
 }

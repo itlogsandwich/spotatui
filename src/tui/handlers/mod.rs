@@ -35,7 +35,10 @@ mod settings;
 mod sort_menu;
 mod track_table;
 
-use crate::core::app::{ActiveBlock, App, ArtistBlock, InputContext, RouteId, SearchResultBlock};
+use crate::core::app::{
+  ActiveBlock, App, ArtistBlock, InputContext, RouteId, SearchResultBlock, SourceFocus,
+};
+use crate::core::source::Source;
 use crate::infra::network::IoEvent;
 use crate::tui::event::Key;
 use rspotify::model::{context::CurrentPlaybackContext, PlayableItem};
@@ -167,7 +170,24 @@ pub fn handle_app(key: Key, app: &mut App) {
       handle_jump_to_context(app);
     }
     _ if key == app.user_config.keys.manage_devices => {
-      app.dispatch(IoEvent::GetDevices);
+      // Open the combined Source & Device picker immediately so it is reachable
+      // even offline / when Local is the active source. Initial focus is the
+      // Source panel under Local (devices are Spotify Connect only), else Devices.
+      app.source_list_index = Source::ALL
+        .iter()
+        .position(|s| *s == app.active_source)
+        .unwrap_or(0);
+      app.source_device_focus = if app.active_source == Source::Spotify {
+        SourceFocus::Devices
+      } else {
+        SourceFocus::Source
+      };
+      app.push_navigation_stack(RouteId::SelectedDevice, ActiveBlock::SelectDevice);
+      // Only Spotify needs a `me/player/devices` fetch; skip it under Local so an
+      // unauthenticated/offline session doesn't surface a spurious error.
+      if app.active_source == Source::Spotify {
+        app.dispatch(IoEvent::GetDevices);
+      }
     }
     _ if key == app.user_config.keys.decrease_volume => {
       app.decrease_volume();
@@ -219,8 +239,14 @@ pub fn handle_app(key: Key, app: &mut App) {
       app.set_current_route_state(Some(ActiveBlock::Input), Some(ActiveBlock::Input));
     }
     _ if key == app.user_config.keys.search => {
-      app.input_context = InputContext::GlobalSearch;
-      app.set_current_route_state(Some(ActiveBlock::Input), Some(ActiveBlock::Input));
+      // Search is gated on the active source's capability (no `Searcher` impl
+      // for Local Files), so it's a no-op with a hint there.
+      if app.active_source.supports_search() {
+        app.input_context = InputContext::GlobalSearch;
+        app.set_current_route_state(Some(ActiveBlock::Input), Some(ActiveBlock::Input));
+      } else {
+        app.set_status_message("Search isn't available for Local Files", 4);
+      }
     }
     _ if key == app.user_config.keys.copy_song_url => {
       app.copy_song_url();

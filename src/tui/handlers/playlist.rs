@@ -1,13 +1,35 @@
 use super::common_key_events;
 use crate::core::app::{ActiveBlock, RouteId};
 use crate::core::app::{App, DialogContext, PlaylistFolderItem, TrackTableContext};
+use crate::core::source::Source;
 use crate::infra::network::IoEvent;
 use crate::tui::event::Key;
 use rspotify::model::idtypes::PlaylistId;
 
-/// Total items = playlists/folders + the "Add Playlist" entry at the bottom
+/// Total items in the sidebar Playlists panel. For Spotify this is
+/// playlists/folders + the "Add Playlist" entry; for Local it is the folder
+/// count (no write capability, so no "Add Playlist").
 fn total_display_count(app: &App) -> usize {
-  app.get_playlist_display_count() + 1
+  if app.active_source == Source::Local {
+    app.local_playlists.len()
+  } else {
+    app.get_playlist_display_count() + 1
+  }
+}
+
+/// Local Files: open the highlighted folder's tracks in the shared track table.
+fn open_local_folder(app: &mut App) {
+  let Some(idx) = app.selected_playlist_index else {
+    return;
+  };
+  if let Some(folder) = app.local_playlists.get(idx) {
+    let uri = folder.uri.clone();
+    app.track_table.tracks = Vec::new();
+    app.track_table.selected_index = 0;
+    app.track_table.context = Some(TrackTableContext::LocalPlaylist);
+    app.dispatch(IoEvent::GetLocalTracks(uri));
+    app.push_navigation_stack(RouteId::TrackTable, ActiveBlock::TrackTable);
+  }
 }
 
 pub fn handler(key: Key, app: &mut App) {
@@ -49,6 +71,9 @@ pub fn handler(key: Key, app: &mut App) {
         app.selected_playlist_index = Some(count - 1);
       }
     }
+    Key::Enter if app.active_source == Source::Local => {
+      open_local_folder(app);
+    }
     Key::Enter => {
       if let Some(selected_idx) = app.selected_playlist_index {
         let playlist_count = app.get_playlist_display_count();
@@ -81,7 +106,8 @@ pub fn handler(key: Key, app: &mut App) {
         }
       }
     }
-    Key::Char('D') => {
+    // Deleting playlists is a Spotify-only (PlaylistWriter) action.
+    Key::Char('D') if app.active_source == Source::Spotify => {
       if let Some(selected_idx) = app.selected_playlist_index {
         if let Some(PlaylistFolderItem::Playlist { index, .. }) =
           app.get_playlist_display_item_at(selected_idx)
@@ -135,5 +161,32 @@ mod tests {
     }
 
     assert!(rx.try_recv().is_err());
+  }
+
+  #[test]
+  fn enter_on_local_folder_dispatches_get_local_tracks() {
+    use crate::core::plugin_api::PlaylistInfo;
+    let (tx, rx) = channel();
+    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    app.active_source = Source::Local;
+    app.local_playlists = vec![PlaylistInfo {
+      uri: "file:///music/Jazz".to_string(),
+      name: "Jazz".to_string(),
+      owner: "local".to_string(),
+      track_count: 0,
+      id: None,
+      owner_id: None,
+      collaborative: false,
+      public: None,
+      image_url: None,
+    }];
+    app.selected_playlist_index = Some(0);
+
+    handler(Key::Enter, &mut app);
+
+    match rx.recv().unwrap() {
+      IoEvent::GetLocalTracks(uri) => assert_eq!(uri, "file:///music/Jazz"),
+      _ => panic!("expected local tracks fetch"),
+    }
   }
 }

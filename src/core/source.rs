@@ -24,6 +24,53 @@
 use crate::core::plugin_api::{AlbumInfo, ArtistInfo, PlaylistInfo, SearchResults, TrackInfo};
 use anyhow::Result;
 
+/// The source the UI is currently scoped to — which catalog the sidebar, search
+/// and capability gating reflect.
+///
+/// This is a **browse-scope** marker only: it never changes playback routing
+/// (that stays URI-scheme driven via `route_local_event` + `App::local_playback`),
+/// so switching the active source never interrupts what is currently playing.
+///
+/// The enum is deliberately unconditional — both variants compile in every
+/// build (including the slim `telemetry`-only CI build) so handlers and UI code
+/// never need `#[cfg]`. Only the Local *data loading* is gated behind the
+/// `local-files` feature.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Source {
+  #[default]
+  Spotify,
+  Local,
+}
+
+impl Source {
+  /// Every selectable source, in display order. Add new sources here.
+  pub const ALL: [Source; 2] = [Source::Spotify, Source::Local];
+
+  /// Human-readable label shown in the source picker.
+  pub fn label(&self) -> &'static str {
+    match self {
+      Source::Spotify => "Spotify",
+      Source::Local => "Local Files",
+    }
+  }
+
+  /// Whether this source can search its catalog (implements [`Searcher`]).
+  pub fn supports_search(&self) -> bool {
+    matches!(self, Source::Spotify)
+  }
+
+  /// Whether this source exposes a saved library — liked songs, saved albums,
+  /// followed artists (implements [`LibraryProvider`]).
+  pub fn supports_library(&self) -> bool {
+    matches!(self, Source::Spotify)
+  }
+
+  /// Whether this source can mutate playlists (implements [`PlaylistWriter`]).
+  pub fn supports_playlist_write(&self) -> bool {
+    matches!(self, Source::Spotify)
+  }
+}
+
 /// The required minimum every media source implements: browse playlists and the
 /// tracks within them.
 pub trait MediaSource {

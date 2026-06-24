@@ -3,6 +3,7 @@ use crate::core::plugin_api::{
   ArtistInfo, EpisodeInfo, PlayableInfo, PlaylistInfo, SavedAlbumInfo, ShowInfo, TrackInfo,
 };
 use crate::core::sort::{SortContext, SortField, SortOrder, SortState};
+use crate::core::source::Source;
 use crate::core::user_config::{color_to_string, normalize_tick_rate_milliseconds, UserConfig};
 use crate::infra::network::sync::{PartySession, PartyStatus};
 use crate::infra::network::IoEvent;
@@ -415,6 +416,15 @@ pub enum AlbumTableContext {
 pub enum EpisodeTableContext {
   Simplified,
   Full,
+}
+
+/// Which panel of the combined Source & Device picker (the `d` screen) has
+/// keyboard focus.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub enum SourceFocus {
+  Source,
+  #[default]
+  Devices,
 }
 
 /// Time range for Top Tracks/Artists in Discover feature
@@ -862,6 +872,13 @@ pub struct App {
   /// Local Files browser, and the cursor within that list.
   pub local_playlists: Vec<PlaylistInfo>,
   pub local_playlists_index: usize,
+  /// The source the UI is currently scoped to (sidebar, search, capability
+  /// gating). Browse-scope only — never changes playback routing.
+  pub active_source: Source,
+  /// Cursor within the Source panel of the `d` picker (index into [`Source::ALL`]).
+  pub source_list_index: usize,
+  /// Which panel of the `d` picker currently has focus.
+  pub source_device_focus: SourceFocus,
   pub clipboard: Option<Clipboard>,
   pub shows_list_index: usize,
   pub episode_list_index: usize,
@@ -1081,6 +1098,9 @@ impl Default for App {
       artists_list_index: 0,
       local_playlists: Vec::new(),
       local_playlists_index: 0,
+      active_source: Source::default(),
+      source_list_index: 0,
+      source_device_focus: SourceFocus::default(),
       shows_list_index: 0,
       episode_list_index: 0,
       artists: vec![],
