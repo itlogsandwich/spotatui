@@ -68,9 +68,9 @@ fn is_audio_file(path: &Path) -> bool {
 
 /// A media source that exposes local audio files rooted at a directory.
 ///
-/// Each immediate subdirectory of `root` becomes a playlist; audio files
-/// directly in `root` (not in a subdirectory) are skipped by `playlists()` but
-/// retrievable if their parent URI is passed to `tracks()`.
+/// Each immediate subdirectory of `root` becomes a playlist. When audio files
+/// sit directly in `root`, a synthetic `"(root)"` playlist is also returned as
+/// the first entry so those loose files are browsable.
 pub struct LocalSource {
   root: PathBuf,
 }
@@ -101,11 +101,16 @@ impl MediaSource for LocalSource {
     "file"
   }
 
-  /// Return one [`PlaylistInfo`] per immediate subdirectory of `root`.
+  /// Return one [`PlaylistInfo`] per immediate subdirectory of `root`, plus a
+  /// synthetic `"(root)"` entry when the music root itself directly contains
+  /// at least one audio file.
   ///
-  /// The playlist `uri` is `file://<abs-path-to-subdir>`, the `name` is the
-  /// directory's file name, and `track_count` is the number of audio files
-  /// directly inside that subdirectory (non-recursive).
+  /// The playlist `uri` is `file://<abs-path>`, the `name` is the directory's
+  /// file name (or `"(root)"` for the synthetic entry), and `track_count` is
+  /// the number of audio files directly inside that directory (non-recursive).
+  ///
+  /// The `"(root)"` entry, when present, is always placed first so loose files
+  /// at the root are easy to find.
   ///
   /// TODO(multi-source): move std::fs::read_dir calls into tokio::task::spawn_blocking
   ///   or tokio::fs before wiring — blocking I/O on the async executor stalls
@@ -115,10 +120,16 @@ impl MediaSource for LocalSource {
       .with_context(|| format!("reading music root {:?}", self.root))?;
 
     let mut playlists = Vec::new();
+    // Count loose audio files directly in root in the same pass that collects
+    // subdirectories, so we avoid a second read_dir call on the same path.
+    let mut root_audio_count: u32 = 0;
     for entry in entries {
       let entry = entry.context("reading directory entry")?;
       let path = entry.path();
       if !path.is_dir() {
+        if path.is_file() && is_audio_file(&path) {
+          root_audio_count += 1;
+        }
         continue;
       }
 
@@ -148,6 +159,29 @@ impl MediaSource for LocalSource {
 
     // Sort alphabetically for stable ordering across runs.
     playlists.sort_by(|a, b| a.name.cmp(&b.name));
+
+    // Prepend a synthetic "(root)" entry when the root directory itself
+    // contains at least one audio file, so loose files are browsable.
+    // Note: a user-created subdirectory literally named "(root)" would result
+    // in two entries with the same display name but different URIs; this is
+    // unlikely in practice and acceptable given the clear "(root)" sentinel.
+    if root_audio_count > 0 {
+      playlists.insert(
+        0,
+        PlaylistInfo {
+          uri: path_to_file_uri(&self.root),
+          name: "(root)".to_string(),
+          owner: "local".to_string(),
+          track_count: root_audio_count,
+          id: None,
+          collaborative: false,
+          public: None,
+          image_url: None,
+          owner_id: None,
+        },
+      );
+    }
+
     Ok(playlists)
   }
 
@@ -542,7 +576,7 @@ mod tests {
     // Create in reverse alphabetical order to verify that the sort actually fires.
     std::fs::create_dir(root.join("Rock")).unwrap();
     std::fs::create_dir(root.join("Jazz")).unwrap();
-    // A file in root should be ignored.
+    // A loose audio file in root triggers the synthetic "(root)" entry.
     std::fs::File::create(root.join("stray.mp3")).unwrap();
 
     let src = LocalSource::new(root);
@@ -554,14 +588,77 @@ mod tests {
     let names: Vec<&str> = playlists.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(
       names,
-      vec!["Jazz", "Rock"],
-      "playlists should be sorted alphabetically regardless of readdir order"
+      vec!["(root)", "Jazz", "Rock"],
+      "synthetic (root) entry should come first; subdirs sorted alphabetically"
     );
 
     for pl in &playlists {
       assert_eq!(pl.owner, "local");
       assert!(pl.uri.starts_with("file://"), "uri should be a file:// URI");
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // playlists() — synthetic (root) entry
+  // ---------------------------------------------------------------------------
+
+  #[test]
+  fn playlists_adds_root_entry_when_root_has_loose_audio_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    // A subdirectory (for variety) and a loose audio file directly in root.
+    std::fs::create_dir(root.join("Albums")).unwrap();
+    write_wav(&root.join("loose.wav"), 44100, 100);
+
+    let src = LocalSource::new(root);
+    let playlists = tokio::runtime::Runtime::new()
+      .unwrap()
+      .block_on(src.playlists())
+      .unwrap();
+
+    // "(root)" must be present and first.
+    assert!(
+      !playlists.is_empty(),
+      "expected at least one playlist entry"
+    );
+    let first = &playlists[0];
+    assert_eq!(
+      first.name, "(root)",
+      "first entry must be the synthetic root"
+    );
+    assert_eq!(
+      first.uri,
+      path_to_file_uri(root),
+      "root entry URI must point at the music root"
+    );
+    assert_eq!(first.track_count, 1, "root entry must count the loose file");
+    assert_eq!(first.owner, "local");
+  }
+
+  #[test]
+  fn playlists_omits_root_entry_when_root_has_no_loose_audio_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    // Only subdirectories; no loose files in root.
+    let sub = root.join("Classical");
+    std::fs::create_dir(&sub).unwrap();
+    write_wav(&sub.join("piece.wav"), 44100, 100);
+    // A non-audio file in root must not trigger the "(root)" entry.
+    std::fs::File::create(root.join("cover.jpg")).unwrap();
+
+    let src = LocalSource::new(root);
+    let playlists = tokio::runtime::Runtime::new()
+      .unwrap()
+      .block_on(src.playlists())
+      .unwrap();
+
+    let names: Vec<&str> = playlists.iter().map(|p| p.name.as_str()).collect();
+    assert!(
+      !names.contains(&"(root)"),
+      "no loose audio files in root means no (root) entry; got {names:?}"
+    );
   }
 
   #[test]
