@@ -1385,7 +1385,16 @@ async fn start_tokio(io_rx: std::sync::mpsc::Receiver<IoEvent>, network: &mut Ne
           && crate::infra::subsonic::dispatch::route_subsonic_event(&network.app, &io_event).await;
         #[cfg(not(feature = "subsonic"))]
         let handled_subsonic = false;
-        if !handled_locally && !handled_subsonic {
+        // Internet radio is intercepted last before the Spotify network. A
+        // `radio:` URI falls through both earlier dispatches and is caught here
+        // (see infra::radio::dispatch). Skipped when already consumed.
+        #[cfg(feature = "internet-radio")]
+        let handled_radio = !handled_locally
+          && !handled_subsonic
+          && crate::infra::radio::dispatch::route_radio_event(&network.app, &io_event).await;
+        #[cfg(not(feature = "internet-radio"))]
+        let handled_radio = false;
+        if !handled_locally && !handled_subsonic && !handled_radio {
           network.handle_network_event(io_event).await;
         }
       }

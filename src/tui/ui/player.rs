@@ -750,11 +750,15 @@ fn draw_lyrics(f: &mut Frame<'_>, app: &App, area: Rect) {
   }
 }
 
-/// Display snapshot for an engine playbar (local files or Subsonic).
+/// Display snapshot for an engine playbar (local files, Subsonic or radio).
 ///
 /// Extracted from the live player so [`render_local_playbar`] is a pure function
 /// of plain values and can be unit-tested with `TestBackend` (no audio device).
-#[cfg(any(feature = "local-files", feature = "subsonic"))]
+#[cfg(any(
+  feature = "local-files",
+  feature = "subsonic",
+  feature = "internet-radio"
+))]
 struct LocalPlaybarView {
   /// Source name shown in the playbar title, e.g. `"Local"` or `"Subsonic"`.
   source_label: &'static str,
@@ -767,6 +771,9 @@ struct LocalPlaybarView {
   /// 1-based position in the queue and total length, e.g. `(3, 12)` => "3/12".
   /// `None` hides the indicator (e.g. a one-track session).
   queue_position: Option<(usize, usize)>,
+  /// An infinite live stream (internet radio): `duration_ms` is meaningless,
+  /// so the seek bar renders as a full LIVE indicator with elapsed time only.
+  live: bool,
 }
 
 /// Render the playbar for an active local-file playback session.
@@ -789,6 +796,7 @@ fn draw_local_playbar(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
     volume_percent: app.user_config.behavior.volume_percent,
     // Only show the indicator for multi-track queues; a single file is noise.
     queue_position: (local.queue.len() > 1).then(|| (local.index + 1, local.queue.len())),
+    live: false,
   };
   render_local_playbar(f, app, layout_chunk, &view);
 }
@@ -811,11 +819,48 @@ fn draw_subsonic_playbar(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
     volume_percent: app.user_config.behavior.volume_percent,
     queue_position: (subsonic.tracks.len() > 1)
       .then(|| (subsonic.index + 1, subsonic.tracks.len())),
+    live: false,
   };
   render_local_playbar(f, app, layout_chunk, &view);
 }
 
-#[cfg(any(feature = "local-files", feature = "subsonic"))]
+/// Render the playbar for an active internet-radio session. The station name is
+/// the title line and the ICY now-playing text (when the stream sends it) the
+/// subtitle; elapsed time renders as a LIVE indicator since a stream is
+/// infinite.
+#[cfg(feature = "internet-radio")]
+fn draw_radio_playbar(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
+  let Some(radio) = app.radio_playback.as_ref() else {
+    return;
+  };
+  // Subtitle preference: live now-playing title, else genre tags from the
+  // directory row, else the station's country/codec/bitrate summary.
+  let artists = radio.now_playing_title().unwrap_or_else(|| {
+    if radio.station.artists.is_empty() {
+      radio.station.album.clone()
+    } else {
+      radio.station.artists.join(", ")
+    }
+  });
+  let view = LocalPlaybarView {
+    source_label: "Radio",
+    name: radio.station.name.clone(),
+    artists,
+    is_playing: !radio.player.is_paused(),
+    position_ms: radio.player.position().as_millis(),
+    duration_ms: 0,
+    volume_percent: app.user_config.behavior.volume_percent,
+    queue_position: None,
+    live: true,
+  };
+  render_local_playbar(f, app, layout_chunk, &view);
+}
+
+#[cfg(any(
+  feature = "local-files",
+  feature = "subsonic",
+  feature = "internet-radio"
+))]
 fn render_local_playbar(f: &mut Frame<'_>, app: &App, layout_chunk: Rect, view: &LocalPlaybarView) {
   let playbar_areas = playbar_layout_areas(app, layout_chunk);
 
@@ -880,9 +925,23 @@ fn render_local_playbar(f: &mut Frame<'_>, app: &App, layout_chunk: Rect, view: 
 
   draw_playbar_controls(f, app, playbar_areas.controls_area);
 
-  let duration_std = std::time::Duration::from_millis(view.duration_ms);
-  let perc = get_track_progress_percentage(view.position_ms, duration_std);
-  let song_progress_label = display_track_progress(view.position_ms, duration_std);
+  // A live stream has no duration: never feed the zero into the percentage
+  // math (division by zero); render a full bar with elapsed time instead.
+  let (perc, song_progress_label) = if view.live {
+    (
+      100,
+      format!(
+        "LIVE \u{2022} {}",
+        super::util::millis_to_minutes(view.position_ms)
+      ),
+    )
+  } else {
+    let duration_std = std::time::Duration::from_millis(view.duration_ms);
+    (
+      get_track_progress_percentage(view.position_ms, duration_std),
+      display_track_progress(view.position_ms, duration_std),
+    )
+  };
   let modifier = if app.user_config.behavior.enable_text_emphasis {
     Modifier::ITALIC | Modifier::BOLD
   } else {
@@ -922,6 +981,13 @@ pub fn draw_playbar(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
   #[cfg(feature = "subsonic")]
   if app.subsonic_playback.is_some() {
     draw_subsonic_playbar(f, app, layout_chunk);
+    return;
+  }
+
+  // Internet radio likewise renders from its own session state.
+  #[cfg(feature = "internet-radio")]
+  if app.radio_playback.is_some() {
+    draw_radio_playbar(f, app, layout_chunk);
     return;
   }
 
@@ -1603,6 +1669,7 @@ mod tests {
       duration_ms: 311_811, // 5:11
       volume_percent: 80,
       queue_position: Some((3, 12)),
+      live: false,
     };
     let content = rendered_text(Rect::new(0, 0, 160, 6), &view);
 
@@ -1640,12 +1707,50 @@ mod tests {
       duration_ms: 200_000,
       volume_percent: 50,
       queue_position: None,
+      live: false,
     };
     let content = rendered_text(Rect::new(0, 0, 160, 6), &view);
     assert!(content.contains("Paused"), "should show Paused: {content}");
     assert!(
       !content.contains('/') || !content.contains("1/1"),
       "a single-track session should not show a queue indicator: {content}"
+    );
+  }
+
+  /// A live (radio) view must render the station, the ICY subtitle and a LIVE
+  /// elapsed label — and must not divide by the zero duration (which would show
+  /// a bogus `0:00/0:00` countdown instead).
+  #[cfg(feature = "local-files")]
+  #[test]
+  fn live_playbar_renders_live_label_instead_of_duration() {
+    let view = LocalPlaybarView {
+      source_label: "Radio",
+      name: "SomaFM Groove Salad".to_string(),
+      artists: "Boards of Canada - Olson".to_string(),
+      is_playing: true,
+      position_ms: 83_000, // 1:23 listening time
+      duration_ms: 0,      // the LIVE sentinel
+      volume_percent: 80,
+      queue_position: None,
+      live: true,
+    };
+    let content = rendered_text(Rect::new(0, 0, 160, 6), &view);
+
+    assert!(
+      content.contains("SomaFM Groove Salad"),
+      "station name should render: {content}"
+    );
+    assert!(
+      content.contains("Boards of Canada - Olson"),
+      "ICY now-playing should render as the subtitle: {content}"
+    );
+    assert!(
+      content.contains("LIVE") && content.contains("1:23"),
+      "progress should render as LIVE with elapsed time: {content}"
+    );
+    assert!(
+      !content.contains("0:00"),
+      "a live stream must not render a zero duration countdown: {content}"
     );
   }
 

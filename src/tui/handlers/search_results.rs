@@ -435,7 +435,58 @@ fn handle_recommended_tracks(app: &mut App) {
   }
 }
 
+/// Key handling for the internet-radio results view: a single full-area
+/// Stations panel (see `draw_radio_station_results`), backed by the
+/// `SongSearch` block. Navigation is pinned to that one block so focus can
+/// never wander into the four Spotify-only blocks that aren't drawn, and
+/// Enter plays the highlighted station directly (no select-the-block first —
+/// there is only one block). Spotify-only actions (`w`/`D`/`r`/queue) are
+/// inert here.
+fn handle_radio_key(key: Key, app: &mut App) {
+  // Whatever mouse hovering or stale state did, the only visible block is
+  // the station list.
+  app.search_results.hovered_block = SearchResultBlock::SongSearch;
+  match key {
+    Key::Esc => {
+      app.search_results.selected_block = SearchResultBlock::Empty;
+    }
+    k if common_key_events::left_event(k, &app.user_config.keys) => {
+      app.search_results.selected_block = SearchResultBlock::Empty;
+      common_key_events::handle_left_event(app);
+    }
+    k if common_key_events::down_event(k, &app.user_config.keys) => {
+      app.search_results.selected_block = SearchResultBlock::SongSearch;
+      handle_down_press_on_selected_block(app);
+    }
+    k if common_key_events::up_event(k, &app.user_config.keys) => {
+      app.search_results.selected_block = SearchResultBlock::SongSearch;
+      handle_up_press_on_selected_block(app);
+    }
+    k if common_key_events::high_event(k) => {
+      app.search_results.selected_block = SearchResultBlock::SongSearch;
+      handle_high_press_on_selected_block(app);
+    }
+    k if common_key_events::middle_event(k) => {
+      app.search_results.selected_block = SearchResultBlock::SongSearch;
+      handle_middle_press_on_selected_block(app);
+    }
+    k if common_key_events::low_event(k) => {
+      app.search_results.selected_block = SearchResultBlock::SongSearch;
+      handle_low_press_on_selected_block(app);
+    }
+    Key::Enter => {
+      app.search_results.selected_block = SearchResultBlock::SongSearch;
+      handle_enter_event_on_selected_block(app);
+    }
+    _ => {}
+  }
+}
+
 pub fn handler(key: Key, app: &mut App) {
+  if app.active_source == crate::core::source::Source::Radio {
+    handle_radio_key(key, app);
+    return;
+  }
   match key {
     Key::Esc => {
       app.search_results.selected_block = SearchResultBlock::Empty;
@@ -586,6 +637,67 @@ mod tests {
     user_config::UserConfig,
   };
   use std::{sync::mpsc::channel, time::SystemTime};
+
+  fn station(uri: &str, name: &str) -> TrackInfo {
+    TrackInfo {
+      uri: Some(uri.to_string()),
+      name: name.to_string(),
+      artists: vec!["ambient".to_string()],
+      album: "US \u{2022} MP3 \u{2022} 128 kbps".to_string(),
+      duration_ms: 0,
+      id: None,
+      album_id: None,
+      artist_refs: vec![],
+      is_playable: true,
+      is_local: false,
+      track_number: 0,
+      explicit: false,
+    }
+  }
+
+  /// Radio results are a single panel: navigation must stay pinned to the
+  /// SongSearch block (the others aren't drawn) and Enter must start the
+  /// highlighted station.
+  #[test]
+  fn radio_results_pin_navigation_and_enter_plays_station() {
+    use crate::core::source::Source;
+
+    let (tx, rx) = channel();
+    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    app.active_source = Source::Radio;
+    app.search_results.tracks = Some(Paged {
+      items: vec![
+        station("radio:https://a.example/one", "One FM"),
+        station("radio:https://b.example/two", "Two FM"),
+      ],
+      total: 2,
+      ..Default::default()
+    });
+    app.search_results.selected_tracks_index = Some(0);
+    app.search_results.hovered_block = SearchResultBlock::SongSearch;
+    app.push_navigation_stack(RouteId::Search, ActiveBlock::SearchResultBlock);
+
+    // Down/right-style keys must never hover/select another block.
+    handler(Key::Down, &mut app);
+    assert_eq!(
+      app.search_results.hovered_block,
+      SearchResultBlock::SongSearch
+    );
+    assert_eq!(
+      app.search_results.selected_block,
+      SearchResultBlock::SongSearch
+    );
+    assert_eq!(app.search_results.selected_tracks_index, Some(1));
+
+    // Enter plays the highlighted station via the shared StartPlayback path.
+    handler(Key::Enter, &mut app);
+    match rx.try_recv().unwrap() {
+      IoEvent::StartPlayback(None, Some(uris), Some(1)) => {
+        assert_eq!(uris[1], "radio:https://b.example/two");
+      }
+      _ => panic!("expected a StartPlayback of the station uris"),
+    }
+  }
 
   #[test]
   fn pressing_w_on_search_song_opens_add_to_playlist_picker() {

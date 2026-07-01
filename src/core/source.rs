@@ -41,11 +41,17 @@ pub enum Source {
   Spotify,
   Local,
   Subsonic,
+  Radio,
 }
 
 impl Source {
   /// Every selectable source, in display order. Add new sources here.
-  pub const ALL: [Source; 3] = [Source::Spotify, Source::Local, Source::Subsonic];
+  pub const ALL: [Source; 4] = [
+    Source::Spotify,
+    Source::Local,
+    Source::Subsonic,
+    Source::Radio,
+  ];
 
   /// Human-readable label shown in the source picker.
   pub fn label(&self) -> &'static str {
@@ -53,6 +59,7 @@ impl Source {
       Source::Spotify => "Spotify",
       Source::Local => "Local Files",
       Source::Subsonic => "Subsonic",
+      Source::Radio => "Internet Radio",
     }
   }
 
@@ -64,6 +71,7 @@ impl Source {
       Source::Spotify => "Spotify",
       Source::Local => "Local",
       Source::Subsonic => "Subsonic",
+      Source::Radio => "Radio",
     }
   }
 
@@ -74,13 +82,14 @@ impl Source {
     match s {
       "Local" => Source::Local,
       "Subsonic" => Source::Subsonic,
+      "Radio" => Source::Radio,
       _ => Source::Spotify,
     }
   }
 
   /// Whether this source can search its catalog (implements [`Searcher`]).
   pub fn supports_search(&self) -> bool {
-    matches!(self, Source::Spotify | Source::Subsonic)
+    matches!(self, Source::Spotify | Source::Subsonic | Source::Radio)
   }
 
   /// Whether this source exposes a saved library — liked songs, saved albums,
@@ -131,6 +140,16 @@ mod tests {
     assert!(!Source::Subsonic.supports_library());
     assert!(!Source::Subsonic.supports_playlist_write());
     assert!(!Source::Subsonic.supports_like());
+  }
+
+  #[test]
+  fn radio_supports_search_only() {
+    // The radio-browser.info directory is searchable; there is no library,
+    // no playlists to write, and no like/star concept for a live stream.
+    assert!(Source::Radio.supports_search());
+    assert!(!Source::Radio.supports_library());
+    assert!(!Source::Radio.supports_playlist_write());
+    assert!(!Source::Radio.supports_like());
   }
 
   #[test]

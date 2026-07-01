@@ -877,6 +877,13 @@ pub struct App {
   /// cursor within that list. Populated by `GetSubsonicPlaylists` dispatch.
   pub subsonic_playlists: Vec<PlaylistInfo>,
   pub subsonic_playlists_index: usize,
+  /// The user's configured internet-radio stations (as playable rows, uri
+  /// `radio:<url>`) shown by the sidebar when the Radio source is active, and
+  /// the cursor within that list. Populated by `GetRadioStations` dispatch.
+  /// Unconditional (domain type) because the sidebar match arms key on the
+  /// unconditional `Source::Radio` variant even in the slim build.
+  pub radio_stations: Vec<TrackInfo>,
+  pub radio_stations_index: usize,
   /// The source the UI is currently scoped to (sidebar, search, capability
   /// gating). Browse-scope only — never changes playback routing.
   pub active_source: Source,
@@ -1031,6 +1038,12 @@ pub struct App {
   /// live from the player here, never touching Spotify/librespot fields.
   #[cfg(feature = "subsonic")]
   pub subsonic_playback: Option<crate::infra::subsonic::SubsonicPlaybackState>,
+  /// The active internet-radio playback session (multi-source Phase 5), or
+  /// `None` when another backend owns playback. Same decoupling contract as
+  /// [`local_playback`](Self::local_playback); unlike it there is no queue —
+  /// a station is one infinite stream.
+  #[cfg(feature = "internet-radio")]
+  pub radio_playback: Option<crate::infra::radio::RadioPlaybackState>,
   /// Sender used to recover native streaming when a stale/disconnected player is detected.
   #[cfg(feature = "streaming")]
   pub streaming_recovery_tx:
@@ -1111,6 +1124,8 @@ impl Default for App {
       local_playlists_index: 0,
       subsonic_playlists: Vec::new(),
       subsonic_playlists_index: 0,
+      radio_stations: Vec::new(),
+      radio_stations_index: 0,
       active_source: Source::default(),
       source_list_index: 0,
       source_device_focus: SourceFocus::default(),
@@ -1272,6 +1287,8 @@ impl Default for App {
       local_playback: None,
       #[cfg(feature = "subsonic")]
       subsonic_playback: None,
+      #[cfg(feature = "internet-radio")]
+      radio_playback: None,
       #[cfg(feature = "streaming")]
       streaming_recovery_tx: None,
       #[cfg(all(feature = "mpris", target_os = "linux"))]

@@ -175,6 +175,14 @@ pub enum IoEvent {
   /// by `infra::subsonic::dispatch`; an inert no-op without the `subsonic` feature.
   #[cfg_attr(not(feature = "subsonic"), allow(dead_code))]
   GetSubsonicSearchResults(String),
+  /// Load the configured internet-radio stations into the sidebar (handled by
+  /// `infra::radio::dispatch`; a no-op on the Spotify network).
+  GetRadioStations,
+  /// Search the radio-browser.info directory and populate `app.search_results`.
+  /// Only read by `infra::radio::dispatch`; an inert no-op without the
+  /// `internet-radio` feature.
+  #[cfg_attr(not(feature = "internet-radio"), allow(dead_code))]
+  GetRadioSearchResults(String),
 }
 
 pub struct Network {
@@ -536,6 +544,9 @@ impl Network {
       IoEvent::GetSubsonicPlaylists
       | IoEvent::GetSubsonicTracks(_)
       | IoEvent::GetSubsonicSearchResults(_) => {}
+      // Radio browse/search events are handled by infra::radio::dispatch before
+      // reaching the network; they only arrive here when the feature is off.
+      IoEvent::GetRadioStations | IoEvent::GetRadioSearchResults(_) => {}
     };
 
     {

@@ -13,6 +13,7 @@ fn total_display_count(app: &App) -> usize {
   match app.active_source {
     Source::Local => app.local_playlists.len(),
     Source::Subsonic => app.subsonic_playlists.len(),
+    Source::Radio => app.radio_stations.len(),
     Source::Spotify => app.get_playlist_display_count() + 1,
   }
 }
@@ -45,6 +46,18 @@ fn open_subsonic_folder(app: &mut App) {
     app.track_table.context = Some(TrackTableContext::SubsonicPlaylist);
     app.dispatch(IoEvent::GetSubsonicTracks(uri));
     app.push_navigation_stack(RouteId::TrackTable, ActiveBlock::TrackTable);
+  }
+}
+
+/// Internet Radio: play the highlighted station directly. A station is a leaf,
+/// not a container — there is no track list to drill into — so Enter starts the
+/// stream instead of opening the track table.
+fn play_radio_station(app: &mut App) {
+  let Some(idx) = app.selected_playlist_index else {
+    return;
+  };
+  if let Some(uri) = app.radio_stations.get(idx).and_then(|s| s.uri.clone()) {
+    app.dispatch(IoEvent::StartPlayback(Some(uri), None, None));
   }
 }
 
@@ -92,6 +105,9 @@ pub fn handler(key: Key, app: &mut App) {
     }
     Key::Enter if app.active_source == Source::Subsonic => {
       open_subsonic_folder(app);
+    }
+    Key::Enter if app.active_source == Source::Radio => {
+      play_radio_station(app);
     }
     Key::Enter => {
       if let Some(selected_idx) = app.selected_playlist_index {

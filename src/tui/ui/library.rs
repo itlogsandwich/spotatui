@@ -85,6 +85,30 @@ pub fn draw_playlist_block(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
     return;
   }
 
+  // Internet Radio: the sidebar Playlists panel lists the configured stations.
+  // A station is a leaf — Enter plays it directly instead of drilling in.
+  if app.active_source == Source::Radio {
+    let items: Vec<String> = if app.radio_stations.is_empty() {
+      vec!["(no stations \u{2014} add behavior.radio_stations or search)".to_string()]
+    } else {
+      app
+        .radio_stations
+        .iter()
+        .map(|s| format!("\u{1F4FB} {}", s.name))
+        .collect()
+    };
+    draw_selectable_list(
+      f,
+      app,
+      layout_chunk,
+      "Radio Stations",
+      &items,
+      highlight_state,
+      app.selected_playlist_index,
+    );
+    return;
+  }
+
   let display_items = app.get_playlist_display_items();
 
   let playlist_items: Vec<String> = if app.playlist_folder_items.is_empty() {
@@ -136,9 +160,10 @@ pub fn draw_user_block(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
     return;
   }
 
-  // Subsonic supports search but has no Spotify-style saved library, so keep the
-  // search input and show the server playlists, but hide the Library panel.
-  if app.active_source == Source::Subsonic {
+  // Subsonic and Radio support search but have no Spotify-style saved library,
+  // so keep the search input and show the source's list, but hide the Library
+  // panel.
+  if app.active_source == Source::Subsonic || app.active_source == Source::Radio {
     if app.size.width >= SMALL_TERMINAL_WIDTH && !app.user_config.behavior.enforce_wide_search_bar {
       let [input_area, playlist_area] = layout_chunk.layout(&Layout::vertical([
         Constraint::Length(3),

@@ -719,6 +719,15 @@ pub struct KeyBindings {
   pub generate_recap: Key,
 }
 
+/// One internet-radio station in the config file: a display name plus the
+/// direct stream URL. The same shape is used in `BehaviorConfigString` (file)
+/// and `BehaviorConfig` (in-memory) — there is nothing to convert.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RadioStationConfig {
+  pub name: String,
+  pub url: String,
+}
+
 #[derive(Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BehaviorConfigString {
   pub seek_milliseconds: Option<u32>,
@@ -768,6 +777,7 @@ pub struct BehaviorConfigString {
   pub subsonic_url: Option<String>,
   pub subsonic_username: Option<String>,
   pub subsonic_password: Option<String>,
+  pub radio_stations: Option<Vec<RadioStationConfig>>,
 }
 
 #[derive(Clone)]
@@ -831,6 +841,10 @@ pub struct BehaviorConfig {
   /// prefer the `SPOTATUI_SUBSONIC_PASSWORD` environment variable, which
   /// overrides this field at connection time and is never written to disk.
   pub subsonic_password: Option<String>,
+  /// The user's internet-radio station list, shown in the sidebar when the
+  /// Radio source is active. Stations found via the in-app directory search
+  /// are not persisted here (yet) — this list is hand-maintained in the config.
+  pub radio_stations: Vec<RadioStationConfig>,
 }
 
 #[derive(Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -968,6 +982,7 @@ impl UserConfig {
         subsonic_url: None,
         subsonic_username: None,
         subsonic_password: None,
+        radio_stations: Vec::new(),
       },
       path_to_config: None,
     }
@@ -1354,6 +1369,14 @@ impl UserConfig {
     if let Some(subsonic_password) = trim_to_none(behavior_config.subsonic_password) {
       self.behavior.subsonic_password = Some(subsonic_password);
     }
+    if let Some(radio_stations) = behavior_config.radio_stations {
+      // Drop entries missing a name or URL rather than failing the whole
+      // config; the dispatch filters again defensively at load time.
+      self.behavior.radio_stations = radio_stations
+        .into_iter()
+        .filter(|s| !s.name.trim().is_empty() && !s.url.trim().is_empty())
+        .collect();
+    }
     Ok(())
   }
 
@@ -1508,6 +1531,11 @@ impl UserConfig {
       subsonic_url: self.behavior.subsonic_url.clone(),
       subsonic_username: self.behavior.subsonic_username.clone(),
       subsonic_password: self.behavior.subsonic_password.clone(),
+      radio_stations: if self.behavior.radio_stations.is_empty() {
+        None
+      } else {
+        Some(self.behavior.radio_stations.clone())
+      },
       stop_after_current_track: Some(self.behavior.stop_after_current_track),
       sidebar_width_percent: Some(self.behavior.sidebar_width_percent),
       playbar_height_rows: Some(self.behavior.playbar_height_rows),
@@ -2037,6 +2065,44 @@ mod tests {
     let mut config = UserConfig::new();
     config.load_behaviorconfig(behavior).unwrap();
     assert_eq!(config.behavior.active_source, Source::Local);
+  }
+
+  #[test]
+  fn radio_stations_round_trip_through_config() {
+    use super::{BehaviorConfigString, RadioStationConfig, UserConfig};
+
+    let yaml = r#"
+radio_stations:
+  - name: SomaFM Groove Salad
+    url: https://ice1.somafm.com/groovesalad-128-mp3
+  - name: ""
+    url: https://blank-name.example/dropped
+"#;
+    let behavior: BehaviorConfigString = serde_yaml::from_str(yaml).unwrap();
+    assert_eq!(behavior.radio_stations.as_ref().map(Vec::len), Some(2));
+
+    let mut config = UserConfig::new();
+    config.load_behaviorconfig(behavior).unwrap();
+    // The blank-name entry is dropped at load; the valid one survives intact.
+    assert_eq!(
+      config.behavior.radio_stations,
+      vec![RadioStationConfig {
+        name: "SomaFM Groove Salad".to_string(),
+        url: "https://ice1.somafm.com/groovesalad-128-mp3".to_string(),
+      }]
+    );
+  }
+
+  #[test]
+  fn radio_stations_missing_field_defaults_to_empty() {
+    use super::{BehaviorConfigString, UserConfig};
+
+    let behavior: BehaviorConfigString = serde_yaml::from_str("{}").unwrap();
+    assert_eq!(behavior.radio_stations, None);
+
+    let mut config = UserConfig::new();
+    config.load_behaviorconfig(behavior).unwrap();
+    assert!(config.behavior.radio_stations.is_empty());
   }
 
   #[test]

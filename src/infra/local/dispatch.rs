@@ -220,6 +220,15 @@ async fn start_local_queue(app: &Arc<Mutex<App>>, queue: Vec<String>, start_idx:
     }
   }
 
+  // Tear down any radio session, for the same short-circuit reason.
+  #[cfg(feature = "internet-radio")]
+  {
+    let radio = app.lock().await.radio_playback.take();
+    if let Some(radio) = radio {
+      radio.player.stop();
+    }
+  }
+
   let player = match acquire_player(app).await {
     Some(player) => player,
     None => return, // error already surfaced

@@ -70,6 +70,13 @@ impl LocalPlayer {
   /// The format is detected from the file's content (FLAC/MP3/MP4-AAC/Vorbis/
   /// WAV are supported by default). Returns an error if the file cannot be
   /// opened or its format is unsupported.
+  ///
+  /// Only the tempfile-based sources play files; a build with just
+  /// `internet-radio` uses [`play_stream`](Self::play_stream) instead.
+  #[cfg_attr(
+    not(any(feature = "local-files", feature = "subsonic")),
+    allow(dead_code)
+  )]
   pub fn play_file(&self, path: &Path) -> Result<()> {
     let file = std::fs::File::open(path)
       .with_context(|| format!("opening audio file {}", path.display()))?;
@@ -78,6 +85,38 @@ impl LocalPlayer {
 
     // `clear` drops any queued source and pauses the sink; re-`play` after the
     // new source is appended so playback actually starts.
+    self.sink.clear();
+    self.sink.append(decoder);
+    self.sink.play();
+    Ok(())
+  }
+
+  /// Decode an already-opened **live stream** and play it, replacing whatever
+  /// was playing.
+  ///
+  /// Unlike [`play_file`](Self::play_file) the reader is treated as
+  /// non-seekable: the decoder is built with `with_seekable(false)` so the
+  /// symphonia probe never issues the `Seek` that breaks on an infinite HTTP
+  /// (internet-radio) stream — the `Seek` bound is only there to satisfy
+  /// rodio's type signature. A live stream has no filename, so format
+  /// detection is primed from `mime_type` (e.g. `"audio/mpeg"` from the ICY
+  /// response's Content-Type) when available.
+  ///
+  /// **Blocking:** the probe reads from the network reader; call it off the
+  /// async runtime (e.g. `spawn_blocking`) like `play_file`.
+  #[cfg(feature = "internet-radio")]
+  pub fn play_stream<R>(&self, reader: R, mime_type: Option<&str>) -> Result<()>
+  where
+    R: std::io::Read + std::io::Seek + Send + Sync + 'static,
+  {
+    let mut builder = Decoder::builder().with_data(reader).with_seekable(false);
+    if let Some(mime) = mime_type {
+      builder = builder.with_mime_type(mime);
+    }
+    let decoder = builder
+      .build()
+      .map_err(|e| anyhow::anyhow!("decoding audio stream: {e}"))?;
+
     self.sink.clear();
     self.sink.append(decoder);
     self.sink.play();
@@ -120,11 +159,25 @@ impl LocalPlayer {
   /// Whether the sink has no source playing — either nothing was ever played,
   /// or the current track played to completion (used to advance to the next
   /// track).
+  ///
+  /// Radio never polls this (an infinite stream has no end-of-track), so it is
+  /// dead code in a build with just `internet-radio`.
+  #[cfg_attr(
+    not(any(feature = "local-files", feature = "subsonic")),
+    allow(dead_code)
+  )]
   pub fn is_finished(&self) -> bool {
     self.sink.empty()
   }
 
   /// Seek to an absolute position within the current source.
+  ///
+  /// Radio consumes `Seek` as a no-op (nothing to seek within a live stream),
+  /// so this is dead code in a build with just `internet-radio`.
+  #[cfg_attr(
+    not(any(feature = "local-files", feature = "subsonic")),
+    allow(dead_code)
+  )]
   pub fn seek(&self, pos: Duration) -> Result<()> {
     self
       .sink
@@ -150,7 +203,12 @@ fn open_sink() -> Result<(Sink, mpsc::Sender<()>)> {
     .name("spotatui-local-audio".to_string())
     .spawn(move || {
       match OutputStreamBuilder::open_default_stream() {
-        Ok(stream) => {
+        Ok(mut stream) => {
+          // rodio `eprintln!`s a "Dropping OutputStream" warning on drop by
+          // default (it has no `tracing` feature enabled here). Raw stderr
+          // output corrupts the TUI, and the drop is deliberate anyway (device
+          // handoff between sources tears the player down) — silence it.
+          stream.log_on_drop(false);
           let sink = Sink::connect_new(stream.mixer());
           if init_tx.send(Ok(sink)).is_err() {
             return; // player was dropped before init completed

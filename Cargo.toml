@@ -58,6 +58,13 @@ md-5 = { version = "0.10", optional = true }
 # rodio sink. Also a dev-dependency (used by tests across features).
 tempfile = { version = "3", optional = true }
 
+# Internet-radio dependencies: stream-download buffers an infinite HTTP (ICY)
+# stream behind a Read+Seek adapter that rodio can decode without seeking;
+# icy-metadata parses in-band StreamTitle now-playing metadata. Both are only
+# compiled under the opt-in `internet-radio` feature.
+stream-download = { version = "0.24", optional = true, default-features = false, features = ["reqwest-rustls"] }
+icy-metadata = { version = "0.6", optional = true, default-features = false }
+
 # Local-files media source dependencies
 symphonia = { version = "0.5", features = ["mp3", "flac", "ogg", "wav", "aiff", "isomp4", "mkv", "pcm", "vorbis"], optional = true, default-features = false }
 lofty = { version = "0.22", optional = true }
@@ -141,6 +148,7 @@ scripting = ["dep:mlua"]
 audio-decode = ["dep:rodio"]
 local-files = ["audio-decode", "dep:lofty", "dep:symphonia"]
 subsonic = ["dep:md-5", "audio-decode", "dep:tempfile"]
+internet-radio = ["audio-decode", "dep:stream-download", "dep:icy-metadata"]
 
 [dev-dependencies]
 tempfile = "3"

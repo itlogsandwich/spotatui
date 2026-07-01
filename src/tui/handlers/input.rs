@@ -117,6 +117,8 @@ fn process_input(app: &mut App, input: String) {
   // the active source's catalog.
   if app.active_source == crate::core::source::Source::Subsonic {
     app.dispatch(IoEvent::GetSubsonicSearchResults(input));
+  } else if app.active_source == crate::core::source::Source::Radio {
+    app.dispatch(IoEvent::GetRadioSearchResults(input));
   } else {
     app.dispatch(IoEvent::GetSearchResults(input, app.get_user_country()));
   }

@@ -297,6 +297,15 @@ async fn release_other_backends(app: &Arc<Mutex<App>>) {
       local.player.stop();
     }
   }
+  // Tear down any radio session (the `!handled_subsonic` short-circuit in the
+  // runtime means the radio dispatch never sees this subsonic: start).
+  #[cfg(feature = "internet-radio")]
+  {
+    let radio = app.lock().await.radio_playback.take();
+    if let Some(radio) = radio {
+      radio.player.stop();
+    }
+  }
 }
 
 /// Reuse the live subsonic player, or open a fresh output device for one. A

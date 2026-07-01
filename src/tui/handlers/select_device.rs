@@ -109,6 +109,11 @@ fn select_source(app: &mut App) {
         app.subsonic_playlists_index = 0;
         app.dispatch(IoEvent::GetSubsonicPlaylists);
       }
+      Source::Radio => {
+        // Populate the sidebar with the configured stations.
+        app.radio_stations_index = 0;
+        app.dispatch(IoEvent::GetRadioStations);
+      }
       Source::Spotify => {}
     }
   }

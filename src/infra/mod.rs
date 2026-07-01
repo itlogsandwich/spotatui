@@ -12,6 +12,8 @@ pub mod mpris;
 pub mod network;
 #[cfg(feature = "streaming")]
 pub mod player;
+#[cfg(feature = "internet-radio")]
+pub mod radio;
 pub mod redirect_uri;
 #[cfg(feature = "scripting")]
 pub mod scripting;
