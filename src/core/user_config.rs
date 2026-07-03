@@ -500,16 +500,20 @@ impl VisualizerStyle {
   }
 }
 
-/// Controls the playback state immediately after spotatui connects to a device on startup.
+/// Controls the playback state on startup, both for Spotify and for a persisted
+/// non-Spotify session (local/Subsonic/radio/YouTube) that spotatui resumes on
+/// launch.
 #[derive(Clone, Copy, Debug, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StartupBehavior {
-  /// Leave playback as-is (current Spotify state). This is the default.
+  /// Restore the last state: leave Spotify playback as-is, and resume a persisted
+  /// non-Spotify session to the exact play/pause state it had when spotatui last
+  /// closed (a track playing at exit resumes playing). This is the default.
   #[default]
   Continue,
-  /// Always resume / start playback on launch.
+  /// Always start playing on launch (Spotify, or the restored session).
   Play,
-  /// Always pause playback on launch.
+  /// Always pause on launch (Spotify, or the restored session).
   Pause,
 }
 

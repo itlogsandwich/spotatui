@@ -227,6 +227,11 @@ the audio visualizer work exactly like they do for Spotify.
 These sources need no Spotify Premium. Combined with YouTube's local playlists, spotatui is
 fully usable without any paid account.
 
+**Resuming your last session:** quit while playing from a non-Spotify source and spotatui
+remembers that track and its position, bringing it back on the next launch. This follows the
+`startup_behavior` setting: the default `continue` resumes it exactly as it was (playing if it
+was playing when you closed), `play` always resumes it, and `pause` cues it paused.
+
 Availability: included in the Linux and Windows release binaries. Not yet available on macOS
 (the shared audio output path is disabled there pending a fix; contributions welcome). When
 building from source, enable them with cargo features:

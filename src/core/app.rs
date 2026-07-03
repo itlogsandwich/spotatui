@@ -3902,7 +3902,7 @@ impl App {
         SettingItem {
           id: "behavior.startup_behavior".to_string(),
           name: "Startup Behavior".to_string(),
-          description: "Playback state when spotatui starts: continue, play, or pause".to_string(),
+          description: "Playback state when spotatui starts. Continue resumes your last session (including a saved non-Spotify track) exactly as it was; Play always starts; Pause always pauses.".to_string(),
           value: SettingValue::Cycle(
             self
               .user_config
