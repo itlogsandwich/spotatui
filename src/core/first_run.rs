@@ -15,6 +15,14 @@ use crate::core::config::ClientConfig;
 use crate::core::source::Source;
 use crate::core::user_config::UserConfig;
 use anyhow::{anyhow, Result};
+use crossterm::{
+  cursor,
+  event::{read, Event, KeyCode, KeyEventKind, KeyModifiers},
+  execute,
+  style::Stylize,
+  terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType},
+  tty::IsTty,
+};
 use std::io::{stdin, stdout, Write};
 
 /// Run the interactive first-run source picker. A no-op after the first launch
@@ -39,6 +47,174 @@ pub async fn run_first_run_picker(
     return Ok(());
   }
 
+  // Collect the chosen sources. Interactive terminals get the checkbox picker;
+  // piped / non-interactive stdin falls back to the numbered single-select prompt
+  // so headless and scripted runs never hang on a raw-mode read.
+  let selections = if stdout().is_tty() && stdin().is_tty() {
+    match interactive_multiselect(&options)? {
+      Some(selected) => selected,
+      // Cancelled (esc / ctrl-c) or nothing checked: fall through to the Spotify
+      // wizard, matching the historical default.
+      None => return Ok(()),
+    }
+  } else {
+    numbered_fallback(&options)?
+  };
+
+  apply_selections(selections, user_config, client_config).await
+}
+
+/// Act on the sources the user chose. `active_source` is set to the first checked
+/// source in display order; every checked free source has its config collected.
+async fn apply_selections(
+  selections: Vec<Source>,
+  user_config: &mut UserConfig,
+  client_config: &mut ClientConfig,
+) -> Result<()> {
+  // Spotify only: keep today's behavior and let `load_config` run the wizard.
+  if selections == [Source::Spotify] {
+    return Ok(());
+  }
+
+  let spotify_selected = selections.contains(&Source::Spotify);
+  let active = selections[0];
+
+  // If Spotify wasn't chosen, seed a default `client.yml` (no OAuth) so a later
+  // in-TUI Spotify login has a client id to work with. If Spotify *was* chosen we
+  // leave `client.yml` absent so `load_config` runs the OAuth wizard below.
+  if !spotify_selected {
+    client_config.init_default_spotify_config()?;
+  }
+  user_config.behavior.active_source = active;
+  // Persisting the config here writes `enable_global_song_count`, which suppresses
+  // the later opt-in prompt. Default it to opt-out so we never enable anonymous
+  // telemetry for a user who was never asked (they can enable it in config.yml).
+  user_config.behavior.enable_global_song_count = false;
+  user_config.save_config()?;
+
+  // Collect credentials / check prerequisites for each chosen free source.
+  for source in &selections {
+    if *source != Source::Spotify {
+      configure_source(*source, user_config).await?;
+    }
+  }
+
+  if spotify_selected {
+    // Fall through: `load_config` runs the existing Spotify auth wizard.
+    println!("\nSetting up your other sources, then we'll log in to Spotify...\n");
+    return Ok(());
+  }
+
+  println!(
+    "\nStarting spotatui with {} as your source. Press `d` anytime to switch or to log in to Spotify.\n",
+    active.label()
+  );
+
+  Ok(())
+}
+
+/// Interactive checkbox picker: arrow keys / j,k to move, space to toggle, enter
+/// to confirm, esc to skip. Returns the checked sources in display order, or
+/// `None` when the user cancels or confirms with nothing selected.
+///
+/// Restores the terminal via a [`RawModeGuard`] on every exit path (early return,
+/// `?`, or panic) so a mid-selection error never leaves the terminal in raw mode.
+fn interactive_multiselect(options: &[Source]) -> Result<Option<Vec<Source>>> {
+  println!("\nWelcome to spotatui! Choose your music sources:");
+  println!("You can add or switch sources anytime from the `d` menu.\n");
+
+  enable_raw_mode()?;
+  let _guard = RawModeGuard;
+
+  let mut checked = vec![false; options.len()];
+  let mut hover = 0usize;
+  // Option lines + a blank spacer + the instructions line.
+  let line_count = (options.len() + 2) as u16;
+  let mut out = stdout();
+  let mut first_draw = true;
+
+  loop {
+    if !first_draw {
+      execute!(
+        out,
+        cursor::MoveToPreviousLine(line_count),
+        Clear(ClearType::FromCursorDown)
+      )?;
+    }
+    first_draw = false;
+
+    for (index, source) in options.iter().enumerate() {
+      let pointer = if index == hover { ">" } else { " " };
+      let checkbox = if checked[index] { "[x]" } else { "[ ]" };
+      let line = format!(
+        "  {pointer} {checkbox} {}{}",
+        source.label(),
+        source_note(*source)
+      );
+      if index == hover {
+        print!("{}\r\n", line.cyan().bold());
+      } else {
+        print!("{line}\r\n");
+      }
+    }
+    print!("\r\n");
+    print!(
+      "  {}\r\n",
+      "↑/↓ move · space select · enter confirm · esc skip".dark_grey()
+    );
+    out.flush()?;
+
+    let event = read()?;
+    let key = match event {
+      // Ignore key-release / repeat events (Windows emits them) and non-key events.
+      Event::Key(key) if key.kind == KeyEventKind::Press => key,
+      _ => continue,
+    };
+
+    match key.code {
+      KeyCode::Up | KeyCode::Char('k') => {
+        hover = if hover == 0 {
+          options.len() - 1
+        } else {
+          hover - 1
+        };
+      }
+      KeyCode::Down | KeyCode::Char('j') => {
+        hover = (hover + 1) % options.len();
+      }
+      KeyCode::Char(' ') => checked[hover] = !checked[hover],
+      KeyCode::Enter => {
+        let selected: Vec<Source> = options
+          .iter()
+          .zip(&checked)
+          .filter_map(|(source, &on)| on.then_some(*source))
+          .collect();
+        return Ok(if selected.is_empty() {
+          None
+        } else {
+          Some(selected)
+        });
+      }
+      KeyCode::Esc | KeyCode::Char('q') => return Ok(None),
+      KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(None),
+      _ => {}
+    }
+  }
+}
+
+/// Restores cooked terminal mode when dropped, so any exit path out of the
+/// interactive picker (return, `?`, panic) leaves the terminal usable.
+struct RawModeGuard;
+
+impl Drop for RawModeGuard {
+  fn drop(&mut self) {
+    let _ = disable_raw_mode();
+  }
+}
+
+/// Non-interactive fallback (piped stdin): the original numbered single-select
+/// prompt. Returns a single-element `Vec` for a uniform downstream path.
+fn numbered_fallback(options: &[Source]) -> Result<Vec<Source>> {
   println!("\nWelcome to spotatui! Choose your music source:\n");
   for (index, source) in options.iter().enumerate() {
     println!(
@@ -51,32 +227,7 @@ pub async fn run_first_run_picker(
   println!("\nYou can add or switch sources anytime from the `d` menu.");
 
   let choice = prompt_choice(options.len())?;
-  let selected = options[choice - 1];
-
-  if selected == Source::Spotify {
-    // Fall through: `load_config` runs the existing Spotify auth wizard.
-    return Ok(());
-  }
-
-  // Free source: seed a default `client.yml` (no OAuth) so a later in-TUI Spotify
-  // login has a client id to work with, record the active source, then collect
-  // any credentials the source needs.
-  client_config.init_default_spotify_config()?;
-  user_config.behavior.active_source = selected;
-  // Persisting the config here writes `enable_global_song_count`, which suppresses
-  // the later opt-in prompt. Default it to opt-out so we never enable anonymous
-  // telemetry for a user who was never asked (they can enable it in config.yml).
-  user_config.behavior.enable_global_song_count = false;
-  user_config.save_config()?;
-
-  configure_source(selected, user_config).await?;
-
-  println!(
-    "\nStarting spotatui with {} as your source. Press `d` anytime to switch or to log in to Spotify.\n",
-    selected.label()
-  );
-
-  Ok(())
+  Ok(vec![options[choice - 1]])
 }
 
 /// The sources whose Cargo feature is compiled into this build, in display order.
