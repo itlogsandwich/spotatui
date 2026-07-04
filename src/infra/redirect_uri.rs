@@ -247,9 +247,8 @@ mod tests {
       let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
         .await
         .unwrap();
-      let req = format!(
-        "GET /callback?code=testcode123 HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"
-      );
+      let req =
+        format!("GET /callback?code=testcode123 HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n");
       stream.write_all(req.as_bytes()).await.unwrap();
       let mut buf = vec![0u8; 4096];
       let _ = stream.read(&mut buf).await;
