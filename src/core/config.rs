@@ -180,6 +180,19 @@ impl ClientConfig {
     self.run_auth_setup_wizard()
   }
 
+  /// Write `client.yml` with ncspot defaults but WITHOUT running the OAuth flow.
+  /// Used when a first-run user picks a free source: it seeds a `client_id`/port
+  /// so a later in-TUI Spotify login can build the authorize URL, while doing no
+  /// browser flow now. `load_config` then finds the file and skips the wizard.
+  pub fn init_default_spotify_config(&mut self) -> Result<()> {
+    self.client_id = NCSPOT_CLIENT_ID.to_string();
+    self.fallback_client_id = None;
+    self.client_secret = String::new();
+    self.port = Some(8989);
+    self.setup_version = AUTH_SETUP_VERSION;
+    self.save_config_file()
+  }
+
   pub fn mark_auth_setup_migrated(&mut self) -> Result<()> {
     self.setup_version = AUTH_SETUP_VERSION;
     self.save_config_file()

@@ -146,6 +146,12 @@ scripting = ["dep:mlua"]
 # Shared audio decode/output engine (rodio bundles symphonia). Pulled by any
 # source that plays decoded audio through the local sink (local files, Subsonic).
 audio-decode = ["dep:rodio"]
+# Convenience alias to pull in every alternative (non-Spotify) source at once,
+# e.g. `cargo run --features all-sources`. Deliberately NOT part of `default`:
+# the release binaries enable these explicitly (see .github/workflows/cd.yml) and
+# adding them to `default` would pull lofty/symphonia/md-5/stream-download into
+# every plain `cargo build`.
+all-sources = ["local-files", "subsonic", "internet-radio", "youtube"]
 local-files = ["audio-decode", "dep:lofty", "dep:symphonia"]
 subsonic = ["dep:md-5", "audio-decode", "dep:tempfile", "reqwest/stream"]
 internet-radio = ["audio-decode", "dep:stream-download", "dep:icy-metadata"]

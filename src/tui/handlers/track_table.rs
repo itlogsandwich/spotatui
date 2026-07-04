@@ -661,7 +661,7 @@ mod tests {
 
   fn app_with_saved_tracks() -> (App, std::sync::mpsc::Receiver<IoEvent>) {
     let (tx, rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     app.track_table.context = Some(TrackTableContext::SavedTracks);
     (app, rx)
   }
@@ -770,7 +770,7 @@ mod tests {
   #[test]
   fn filtered_playlist_down_wraps_without_fetching_next_page() {
     let (tx, rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     app.track_table.context = Some(TrackTableContext::MyPlaylists);
     app.playlist_track_table_id = Some(
       PlaylistId::from_id("37i9dQZF1DX4WYpdgoIcn6")
@@ -801,7 +801,7 @@ mod tests {
   #[test]
   fn q_clears_playlist_filter_and_restores_cached_rows() {
     let (tx, _rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     let playlist_id = PlaylistId::from_id("37i9dQZF1DX4WYpdgoIcn6")
       .unwrap()
       .into_static();
@@ -935,7 +935,7 @@ mod tests {
   #[test]
   fn up_on_first_playlist_row_wraps_to_last_loaded_track() {
     let (tx, _rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     app.track_table.context = Some(TrackTableContext::MyPlaylists);
     app.track_table.tracks = vec![
       TrackInfo::from(&full_track("0000000000000000000001", "Track 1")),

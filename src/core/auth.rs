@@ -242,6 +242,7 @@ async fn ensure_auth_token(
   spotify: &mut AuthCodePkceSpotify,
   token_cache_path: &PathBuf,
   auth_port: u16,
+  interactive: bool,
 ) -> Result<()> {
   let mut needs_auth = match load_token_from_file(spotify, token_cache_path).await {
     Ok(true) => false,
@@ -304,6 +305,16 @@ async fn ensure_auth_token(
   }
 
   if needs_auth {
+    // Silent load (free-source launch, or a returning user whose cached token is
+    // present but stale): never open a browser or block on the callback server.
+    // Interactive Spotify login is either the pre-TUI wizard path or the in-TUI
+    // `BeginSpotifyLogin` flow.
+    if !interactive {
+      return Err(anyhow!(
+        "Spotify authentication required but no valid cached token is available"
+      ));
+    }
+
     info!("starting spotify authentication flow on port {}", auth_port);
     let auth_url = spotify.get_authorize_url(None)?;
 
@@ -355,9 +366,33 @@ async fn ensure_auth_token(
   Ok(())
 }
 
+/// Authenticate the Spotify client, trying the primary client id then the
+/// optional fallback. When `interactive` is false, candidates that lack a valid
+/// cached token fail fast (no browser, no blocking callback server) so a
+/// free-source launch or a returning user with a stale token degrades to "no
+/// Spotify session" instead of forcing an OAuth flow.
 pub async fn authenticate_with_fallback(
   client_config: &mut ClientConfig,
   config_paths: &ConfigPaths,
+) -> Result<AuthenticatedClient> {
+  authenticate_candidates(client_config, config_paths, true).await
+}
+
+/// Best-effort silent Spotify load for a free-source launch: returns `Some` only
+/// when a cached token is present and usable, `None` otherwise (never prompts).
+pub async fn try_load_spotify_silently(
+  client_config: &mut ClientConfig,
+  config_paths: &ConfigPaths,
+) -> Option<AuthenticatedClient> {
+  authenticate_candidates(client_config, config_paths, false)
+    .await
+    .ok()
+}
+
+async fn authenticate_candidates(
+  client_config: &mut ClientConfig,
+  config_paths: &ConfigPaths,
+  interactive: bool,
 ) -> Result<AuthenticatedClient> {
   let mut client_candidates = vec![client_config.client_id.clone()];
   if let Some(fallback_id) = client_config.fallback_client_id.clone() {
@@ -378,7 +413,8 @@ pub async fn authenticate_with_fallback(
     let mut candidate =
       build_pkce_spotify_client(client_id, redirect_uri.clone(), token_cache_path.clone());
 
-    let auth_result = ensure_auth_token(&mut candidate, &token_cache_path, auth_port).await;
+    let auth_result =
+      ensure_auth_token(&mut candidate, &token_cache_path, auth_port, interactive).await;
 
     match auth_result {
       Ok(()) => {
@@ -421,6 +457,25 @@ pub async fn authenticate_with_fallback(
     #[cfg(feature = "streaming")]
     redirect_uri: selected_redirect_uri,
   })
+}
+
+/// Prepare an in-TUI Spotify login: build a fresh PKCE client and return it with
+/// the authorize URL to open, the callback port to listen on, and the token cache
+/// path to persist to. PKCE stores the `code_verifier` inside this client
+/// instance, so the caller MUST keep this exact client and later run
+/// `request_token` on it — rebuilding the client would break the exchange with
+/// `invalid_grant`.
+pub fn prepare_interactive_login(
+  client_config: &ClientConfig,
+  config_paths: &ConfigPaths,
+) -> Result<(AuthCodePkceSpotify, String, u16, PathBuf)> {
+  let client_id = client_config.client_id.clone();
+  let token_cache_path = token_cache_path_for_client(&config_paths.token_cache_path, &client_id);
+  let redirect_uri = redirect_uri_for_client(client_config, &client_id);
+  let auth_port = auth_port_from_redirect_uri(&redirect_uri);
+  let mut spotify = build_pkce_spotify_client(&client_id, redirect_uri, token_cache_path.clone());
+  let authorize_url = spotify.get_authorize_url(None)?;
+  Ok((spotify, authorize_url, auth_port, token_cache_path))
 }
 
 pub async fn token_expiry(spotify: &AuthCodePkceSpotify) -> Result<SystemTime> {

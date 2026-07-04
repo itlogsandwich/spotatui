@@ -10,6 +10,11 @@ cargo run
 
 # Slim build — no librespot/audio; fastest iteration, used by CI
 cargo run --no-default-features --features telemetry
+
+# With the free alternative sources (Local/Subsonic/Radio/YouTube). These are NOT
+# in `default`, so a plain `cargo run` is Spotify-only; use the `all-sources` alias
+# (or list them individually) to exercise the first-run source picker and playback.
+cargo run --features all-sources
 ```
 
 ## CI Checks (run before opening a PR)

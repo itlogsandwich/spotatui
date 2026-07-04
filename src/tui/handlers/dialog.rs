@@ -188,7 +188,7 @@ mod tests {
   #[test]
   fn add_to_playlist_picker_dispatches_selected_editable_playlist() {
     let (tx, rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     app.user = Some(user_info("spotatui-owner"));
     app.playlists = Some(Paged {
       total: 3,

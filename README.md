@@ -112,7 +112,7 @@ You may be asked to re-authenticate with Spotify the first time.
 
 ## Installation
 
-> **Important:** Spotify Premium is required for playback features (native streaming and Web API playback controls).
+> **Note:** Spotify is optional. On first launch spotatui asks which source you want to use, and YouTube, Subsonic/Navidrome, Internet Radio, and Local Files all work with no Spotify account. Spotify Premium is only required for the Spotify source (native streaming and Web API playback controls); you can add Spotify anytime later from the `d` menu.
 
 ```bash
 # Homebrew (macOS only)
@@ -159,13 +159,26 @@ Or download pre-built binaries from [GitHub Releases](https://github.com/LargeMo
 
 See the [Installation Wiki](https://github.com/LargeModGames/spotatui/wiki/Installation) for platform-specific requirements and building from source.
 
-## Connecting to Spotify
+## First-time setup
 
-Run `spotatui` and follow the on-screen instructions to connect your Spotify account.
+Run `spotatui`. On the first launch it asks which source you want to set up:
 
-You'll need to create a Spotify Developer app at the [Spotify Dashboard](https://developer.spotify.com/dashboard/applications).
+```
+Welcome to spotatui! Choose your music source:
 
-See the [Installation Wiki](https://github.com/LargeModGames/spotatui/wiki/Installation#connecting-to-spotify) for step-by-step setup.
+  1) Spotify        (needs login)
+  2) YouTube        (free, needs the yt-dlp binary)
+  3) Subsonic       (free, needs a Subsonic/Navidrome server)
+  4) Internet Radio (free)
+  5) Local Files    (free)
+```
+
+- Pick a **free source** to skip Spotify entirely. Subsonic prompts for your server URL and credentials (and verifies the connection); YouTube checks that `yt-dlp` is on your `PATH`. Only sources compiled into your build are listed.
+- Pick **Spotify** to run the Spotify auth wizard. You'll need to create a Spotify Developer app at the [Spotify Dashboard](https://developer.spotify.com/dashboard/applications). See the [Installation Wiki](https://github.com/LargeModGames/spotatui/wiki/Installation#connecting-to-spotify) for step-by-step setup.
+
+### Adding Spotify later
+
+Started with a free source and want Spotify too? Press `d` to open the Source & Device menu and select **Spotify** — spotatui opens your browser to log in without restarting. This enables Spotify's Web API (browsing, playlists, controlling external devices) right away; **native (librespot) streaming still requires a restart**, since it initializes at startup.
 
 ## Usage
 

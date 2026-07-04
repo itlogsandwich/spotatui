@@ -349,7 +349,7 @@ mod tests {
 
   fn test_app() -> App {
     let (tx, _rx) = channel();
-    App::new(tx, UserConfig::new(), SystemTime::now())
+    App::new(tx, UserConfig::new(), Some(SystemTime::now()))
   }
 
   fn station_row(uri: &str, name: &str) -> TrackInfo {

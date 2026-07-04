@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **Spotify is now optional at first-time setup**: On a fresh install spotatui asks which source you want to set up (Spotify, YouTube, Subsonic/Navidrome, Internet Radio, or Local Files — only those compiled into your build are listed). Picking a free source skips the Spotify login entirely and drops you straight into the TUI; Subsonic collects and verifies your server credentials inline, and YouTube checks for `yt-dlp` on your `PATH`. Picking Spotify runs the existing auth wizard unchanged.
+
+### Added
+
+- **Add Spotify without restarting**: If you started with a free source, press `d` and select **Spotify** to log in via your browser in-place. This enables Spotify's Web API (browsing, playlists, controlling external devices) immediately; native (librespot) streaming still requires a restart since it initializes at startup.
+- **`all-sources` build feature**: convenience alias that enables `local-files`, `subsonic`, `internet-radio`, and `youtube` together (e.g. `cargo run --features all-sources`). Not part of `default`.
+
 ## [v0.40.0] 2026-07-04
 
 ### Fixed

@@ -762,6 +762,13 @@ screens more often and cost more CPU. Animation-heavy views keep their separate 
   }
 
   let mut client_config = ClientConfig::new();
+  // First-run source picker (interactive TUI only): lets the user pick a free
+  // source and skip Spotify entirely. Must run before `load_config`, which would
+  // otherwise launch the Spotify-only auth wizard on a fresh install. Skipped for
+  // CLI subcommands (Spotify-only) and when `--reconfigure-auth` is requested.
+  if matches.subcommand_name().is_none() && !matches.get_flag("reconfigure-auth") {
+    crate::core::first_run::run_first_run_picker(&mut user_config, &mut client_config).await?;
+  }
   client_config.load_config()?;
   info!("client authentication config loaded");
 
@@ -872,19 +879,49 @@ screens more often and cost more CPU. Animation-heavy views keep their separate 
   }
 
   let config_paths = client_config.get_or_build_paths()?;
-  let authenticated = auth::authenticate_with_fallback(&mut client_config, &config_paths).await?;
-  let spotify = authenticated.spotify;
-  let final_token_cache_path = authenticated.token_cache_path;
-  #[cfg(feature = "streaming")]
-  let selected_redirect_uri = authenticated.redirect_uri;
 
-  // Persist whatever token is now in memory. All later Spotify requests go through
-  // spotatui's refresh-and-cache path so the on-disk token stays current.
-  if let Err(e) = auth::save_token_to_file(&spotify, &final_token_cache_path).await {
-    log::warn!("Failed to cache token on startup: {}", e);
-  }
-  // Verify that we have a valid token before proceeding
-  let token_expiry = auth::token_expiry(&spotify).await?;
+  // Spotify is only mandatory when the active source IS Spotify, or when running
+  // a CLI subcommand (every subcommand is Spotify-only and should fail cleanly
+  // when unauthenticated). A free-source TUI launch tries a silent token load and
+  // tolerates its absence; the user can add Spotify later via in-TUI login.
+  let spotify_required = matches.subcommand_name().is_some()
+    || user_config.behavior.active_source == crate::core::source::Source::Spotify;
+
+  let authenticated: Option<auth::AuthenticatedClient> = if spotify_required {
+    Some(auth::authenticate_with_fallback(&mut client_config, &config_paths).await?)
+  } else {
+    auth::try_load_spotify_silently(&mut client_config, &config_paths).await
+  };
+
+  // Redirect URI for native streaming: from the authenticated client when a
+  // Spotify session exists, else the configured default (streaming stays off
+  // without Spotify anyway, see the `spotify.is_some()` gate below).
+  #[cfg(feature = "streaming")]
+  let selected_redirect_uri = authenticated
+    .as_ref()
+    .map(|a| a.redirect_uri.clone())
+    .unwrap_or_else(|| client_config.get_redirect_uri());
+
+  let final_token_cache_path = authenticated
+    .as_ref()
+    .map(|a| a.token_cache_path.clone())
+    .unwrap_or_else(|| {
+      auth::token_cache_path_for_client(&config_paths.token_cache_path, &client_config.client_id)
+    });
+
+  // Persist whatever token is now in memory and verify it. All later Spotify
+  // requests go through spotatui's refresh-and-cache path so the on-disk token
+  // stays current. With no Spotify session both stay `None`.
+  let (spotify, token_expiry) = match authenticated.map(|a| a.spotify) {
+    Some(spotify) => {
+      if let Err(e) = auth::save_token_to_file(&spotify, &final_token_cache_path).await {
+        log::warn!("Failed to cache token on startup: {}", e);
+      }
+      let token_expiry = auth::token_expiry(&spotify).await?;
+      (Some(spotify), Some(token_expiry))
+    }
+    None => (None, None),
+  };
 
   let (sync_io_tx, sync_io_rx) = std::sync::mpsc::channel::<IoEvent>();
   info!("app state initialized");
@@ -932,10 +969,12 @@ screens more often and cost more CPU. Animation-heavy views keep their separate 
   } else {
     info!("launching interactive terminal ui");
     crate::infra::history::spawn_history_collector(Arc::clone(&app));
+    // Native streaming needs a Spotify session; skip the probe entirely when
+    // launched against a free source (spotify is None).
     #[cfg(feature = "streaming")]
     let (streaming_supported_for_account, streaming_startup_status_message) =
-      if client_config.enable_streaming {
-        account_supports_native_streaming(&spotify, &final_token_cache_path, &app).await
+      if let (true, Some(spotify_client)) = (client_config.enable_streaming, spotify.as_ref()) {
+        account_supports_native_streaming(spotify_client, &final_token_cache_path, &app).await
       } else {
         (false, None)
       };
@@ -1367,7 +1406,9 @@ screens more often and cost more CPU. Animation-heavy views keep their separate 
         tokio::spawn(async move {
           restore_playback_session(&restore_app, session, initial_startup_behavior).await;
         });
-      } else {
+      } else if network.spotify.is_some() {
+        // Spotify startup play/pause only applies with a Spotify session; a
+        // free-source launch has nothing to activate here.
         match initial_startup_behavior {
           StartupBehavior::Continue => {}
           StartupBehavior::Play => {

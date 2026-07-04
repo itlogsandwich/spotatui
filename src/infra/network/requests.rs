@@ -91,7 +91,7 @@ pub async fn spotify_api_request_json_for_with_refresh(
       match auth::refresh_token_and_cache(spotify, token_cache_path, force).await {
         Ok(expiry) => {
           let mut app = app.lock().await;
-          app.spotify_token_expiry = expiry;
+          app.spotify_token_expiry = Some(expiry);
           app.auth_refresh_in_progress = false;
           Ok(Some(expiry))
         }
@@ -242,7 +242,7 @@ impl Network {
     body: Option<Value>,
   ) -> anyhow::Result<Value> {
     spotify_api_request_json_for_with_refresh(
-      &self.spotify,
+      self.spotify(),
       method,
       path,
       query,

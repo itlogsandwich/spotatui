@@ -280,7 +280,7 @@ mod tests {
     App::new(
       tx,
       crate::core::user_config::UserConfig::new(),
-      SystemTime::now(),
+      Some(SystemTime::now()),
     )
   }
 
@@ -694,11 +694,14 @@ pub async fn start_ui(
         cursor_offset,
       ))?;
 
-      if auth::should_refresh_token_at(app.spotify_token_expiry, SystemTime::now())
-        && !app.auth_refresh_in_progress
-      {
-        app.auth_refresh_in_progress = true;
-        app.dispatch(IoEvent::RefreshAuthentication);
+      // Only refresh when a Spotify session exists; a free-source launch has no
+      // token expiry and must not schedule refreshes.
+      if let Some(expiry) = app.spotify_token_expiry {
+        if auth::should_refresh_token_at(expiry, SystemTime::now()) && !app.auth_refresh_in_progress
+        {
+          app.auth_refresh_in_progress = true;
+          app.dispatch(IoEvent::RefreshAuthentication);
+        }
       }
       next_window_title(&mut window_title_state, &app)
     };
@@ -1126,9 +1129,14 @@ pub async fn start_ui(
 
     if is_first_render {
       let mut app = app.lock().await;
-      app.dispatch(IoEvent::GetCurrentPlayback);
-      app.dispatch(IoEvent::GetPlaylists);
-      app.dispatch(IoEvent::GetUser);
+      // Spotify-only startup fetches: skip them entirely when launched against a
+      // free source with no Spotify session, so the network layer doesn't reject
+      // three events with "connect Spotify" status flashes on every launch.
+      if app.spotify_connected {
+        app.dispatch(IoEvent::GetCurrentPlayback);
+        app.dispatch(IoEvent::GetPlaylists);
+        app.dispatch(IoEvent::GetUser);
+      }
       // A persisted non-Spotify active source needs its sidebar data loaded
       // too (all of these are inert no-ops when the feature is off).
       match app.active_source {

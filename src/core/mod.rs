@@ -1,6 +1,7 @@
 pub mod app;
 pub mod auth;
 pub mod config;
+pub mod first_run;
 pub mod layout;
 pub mod pagination;
 pub mod persisted_playback;

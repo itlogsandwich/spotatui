@@ -121,6 +121,17 @@ fn select_source(app: &mut App) {
       Source::Spotify => {}
     }
   }
+
+  // Adding Spotify from a free-source session: start the in-TUI OAuth login
+  // (browser + async callback). This sits OUTSIDE the `active_source != source`
+  // guard so re-selecting Spotify after a cancelled/timed-out login retries
+  // instead of no-oping (a failed attempt leaves active_source == Spotify but
+  // spotify_connected == false). The `pending_login`/`spotify.is_some()` guards in
+  // the handler make a redundant dispatch a safe no-op. Connected users just
+  // switch back to their already-loaded Spotify data.
+  if source == Source::Spotify && !app.spotify_connected {
+    app.dispatch(IoEvent::BeginSpotifyLogin);
+  }
   app.set_status_message(format!("Source: {}", source.label()), 4);
   app.pop_navigation_stack();
 

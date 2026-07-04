@@ -753,7 +753,7 @@ mod tests {
   #[test]
   fn radio_results_pin_navigation_and_enter_plays_station() {
     let (tx, rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     app.active_source = Source::Radio;
     app.search_results.tracks = Some(Paged {
       items: vec![
@@ -799,7 +799,7 @@ mod tests {
       config_file_path: dir.path().join("config.yml"),
     });
     let (tx, _rx) = channel();
-    let mut app = App::new(tx, user_config, SystemTime::now());
+    let mut app = App::new(tx, user_config, Some(SystemTime::now()));
     app.active_source = Source::Radio;
     app.search_results.tracks = Some(Paged {
       items: vec![station(
@@ -830,7 +830,7 @@ mod tests {
   #[test]
   fn pressing_w_on_search_song_opens_add_to_playlist_picker() {
     let (tx, _rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     app.user = Some(user_info("spotatui-owner"));
     app.playlists = Some(Paged {
       total: 1,
@@ -879,7 +879,7 @@ mod tests {
   #[test]
   fn pressing_shift_d_with_stale_index_past_shorter_playlist_page_does_not_panic() {
     let (_tx, _rx) = channel();
-    let mut app = App::new(_tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(_tx, UserConfig::new(), Some(SystemTime::now()));
     app.search_results.playlists = Some(Paged {
       items: vec![playlist_info(
         "37i9dQZF1DXcBWIGoYBM5M",

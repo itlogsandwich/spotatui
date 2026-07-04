@@ -736,7 +736,7 @@ mod tests {
   #[test]
   fn enter_on_device_selector_dispatches_transfer_and_exits() {
     let (tx, rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     app.devices = Some(DevicePayload {
       devices: vec![Device {
         id: Some("device-1".to_string()),
@@ -773,7 +773,7 @@ mod tests {
   #[test]
   fn global_shift_f_likes_current_track_from_anywhere() {
     let (tx, rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     let track = full_track("0000000000000000000001", "Track 1");
     let expected_track_id = track.id.clone().unwrap();
 
@@ -824,7 +824,7 @@ mod tests {
   #[test]
   fn friends_a_opens_add_dialog_before_global_album_jump() {
     let (tx, rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     let track = full_track("0000000000000000000001", "Track 1");
     app.current_playback_context = Some(CurrentPlaybackContext {
       device: Device {
@@ -886,7 +886,7 @@ mod tests {
   #[test]
   fn friends_without_local_state_still_allows_non_conflicting_globals() {
     let (tx, rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     app.push_navigation_stack(RouteId::Friends, ActiveBlock::Friends);
 
     handle_app(app.user_config.keys.next_track, &mut app);

@@ -390,7 +390,7 @@ mod tests {
     App::new(
       tx,
       crate::core::user_config::UserConfig::new(),
-      SystemTime::now(),
+      Some(SystemTime::now()),
     )
   }
 

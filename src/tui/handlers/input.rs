@@ -339,7 +339,7 @@ mod tests {
     let mut app = App::new(
       tx,
       crate::core::user_config::UserConfig::new(),
-      std::time::SystemTime::now(),
+      Some(std::time::SystemTime::now()),
     );
     let playlist_id = PlaylistId::from_id("37i9dQZF1DX4WYpdgoIcn6")
       .unwrap()
@@ -382,7 +382,7 @@ mod tests {
     let mut app = App::new(
       tx,
       crate::core::user_config::UserConfig::new(),
-      std::time::SystemTime::now(),
+      Some(std::time::SystemTime::now()),
     );
     let playlist_id = PlaylistId::from_id("37i9dQZF1DX4WYpdgoIcn6")
       .unwrap()
@@ -405,7 +405,7 @@ mod tests {
     let mut app = App::new(
       tx,
       crate::core::user_config::UserConfig::new(),
-      std::time::SystemTime::now(),
+      Some(std::time::SystemTime::now()),
     );
 
     // Already on the Search route with focus in the input box. This is the case

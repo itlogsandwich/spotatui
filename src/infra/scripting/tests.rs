@@ -676,7 +676,7 @@ mod drain_tests {
 
   fn make_app() -> (App, std::sync::mpsc::Receiver<IoEvent>) {
     let (tx, rx) = channel();
-    let app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     (app, rx)
   }
 
@@ -926,7 +926,7 @@ mod command_tests {
 
   fn make_app() -> (App, std::sync::mpsc::Receiver<IoEvent>) {
     let (tx, rx) = channel();
-    let app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     (app, rx)
   }
 
@@ -1045,7 +1045,7 @@ mod playbar_effect_tests {
 
   fn make_app() -> (App, std::sync::mpsc::Receiver<IoEvent>) {
     let (tx, rx) = channel();
-    let app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     (app, rx)
   }
 
@@ -1189,7 +1189,7 @@ mod popup_effect_tests {
 
   fn make_app() -> (App, std::sync::mpsc::Receiver<IoEvent>) {
     let (tx, rx) = channel();
-    let app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     (app, rx)
   }
 
@@ -1271,7 +1271,7 @@ mod theme_effect_tests {
 
   fn make_app() -> (App, std::sync::mpsc::Receiver<IoEvent>) {
     let (tx, rx) = channel();
-    let app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     (app, rx)
   }
 

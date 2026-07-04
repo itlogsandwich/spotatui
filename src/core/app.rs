@@ -936,7 +936,14 @@ pub struct App {
   pub is_loading: bool,
   io_tx: Option<Sender<IoEvent>>,
   pub is_fetching_current_playback: bool,
-  pub spotify_token_expiry: SystemTime,
+  /// Expiry of the current Spotify access token, or `None` when there is no
+  /// Spotify session (launched against a free source). The token-refresh poll
+  /// in the runner skips refreshing while this is `None`.
+  pub spotify_token_expiry: Option<SystemTime>,
+  /// Whether a Spotify session is available (token loaded at startup or added
+  /// via in-TUI login). Gates the Spotify-only startup dispatches so a
+  /// free-source launch doesn't spam "connect Spotify" messages.
+  pub spotify_connected: bool,
   pub auth_refresh_in_progress: bool,
   pub dialog: Option<String>,
   pub confirm: bool,
@@ -1256,7 +1263,8 @@ impl Default for App {
       is_loading: false,
       io_tx: None,
       is_fetching_current_playback: false,
-      spotify_token_expiry: SystemTime::now(),
+      spotify_token_expiry: None,
+      spotify_connected: false,
       auth_refresh_in_progress: false,
       dialog: None,
       confirm: false,
@@ -1377,7 +1385,7 @@ impl App {
   pub fn new(
     io_tx: Sender<IoEvent>,
     user_config: UserConfig,
-    spotify_token_expiry: SystemTime,
+    spotify_token_expiry: Option<SystemTime>,
   ) -> App {
     // Read the persisted active source before moving user_config into the struct,
     // so the restored value overrides the Source::default() set by App::default().
@@ -1385,6 +1393,9 @@ impl App {
     App {
       io_tx: Some(io_tx),
       user_config,
+      // A token expiry means a Spotify session loaded at startup; a free-source
+      // launch with no cached token passes `None`. In-TUI login flips both fields.
+      spotify_connected: spotify_token_expiry.is_some(),
       spotify_token_expiry,
       active_source,
       ..App::default()
@@ -1392,6 +1403,13 @@ impl App {
   }
 
   // Send a network event to the network thread
+  /// Clone the IoEvent sender so a spawned task (e.g. the in-TUI Spotify login
+  /// callback server) can dispatch events back into the pump without holding the
+  /// `App` lock. `None` before the sender is wired up or after teardown.
+  pub fn io_tx_clone(&self) -> Option<Sender<IoEvent>> {
+    self.io_tx.clone()
+  }
+
   pub fn dispatch(&mut self, action: IoEvent) {
     // `is_loading` will be set to false again after the async action has finished in network.rs
     self.is_loading = true;
@@ -1866,6 +1884,13 @@ impl App {
   }
 
   fn poll_current_playback(&mut self) {
+    // No Spotify session (free-source launch): the poll would hit the auth gate
+    // and re-flash a "connect Spotify" status message every interval. Free
+    // sources drive their own playback state, so skip the Spotify poll entirely.
+    if !self.spotify_connected {
+      return;
+    }
+
     // Poll interval depends on playback mode:
     // - Native streaming: 5 seconds (real-time events provide updates between polls)
     // - External players (spotifyd, etc.): 1 second (no events, need faster polling for smooth playbar)
@@ -5250,7 +5275,7 @@ mod tests {
   #[test]
   fn reset_saved_tracks_view_clears_cached_pages_and_bumps_generation() {
     let (tx, _rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     app.saved_tracks_prefetch_generation = 7;
     let saved_tracks_domain_page = crate::infra::network::mapping::map_page(
       &saved_tracks_page(
@@ -5283,7 +5308,7 @@ mod tests {
   #[test]
   fn reset_playlist_tracks_view_clears_cached_pages_and_bumps_generation() {
     let (tx, _rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     let playlist_id = PlaylistId::from_id("37i9dQZF1DXcBWIGoYBM5M")
       .unwrap()
       .into_static();
@@ -5318,7 +5343,7 @@ mod tests {
   #[test]
   fn playlist_next_requests_adjacent_offset_when_cache_is_sparse() {
     let (tx, rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     let playlist_id = playlist_id("37i9dQZF1DXcBWIGoYBM5M");
     let first_page = empty_playlist_page(0, 100, 20, true);
     let last_page = empty_playlist_page(80, 100, 20, false);
@@ -5346,7 +5371,7 @@ mod tests {
   #[test]
   fn playlist_next_uses_cached_adjacent_page_before_fetching() {
     let (tx, rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     let playlist_id = playlist_id("37i9dQZF1DX4WYpdgoIcn6");
     let first_page = empty_playlist_page(0, 60, 20, true);
     let second_page = empty_playlist_page(20, 60, 20, true);
@@ -5381,7 +5406,7 @@ mod tests {
   #[test]
   fn playlist_continuous_table_stops_at_sparse_cache_gap() {
     let (tx, rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     let playlist_id = playlist_id("37i9dQZF1DX4WYpdgoIcn6");
     let first_page = playlist_page(
       0,
@@ -5416,7 +5441,7 @@ mod tests {
   #[test]
   fn playlist_next_cached_page_applies_pending_continuous_index() {
     let (tx, _rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     let playlist_id = playlist_id("37i9dQZF1DX4WYpdgoIcn6");
     let first_page = playlist_page(
       0,
@@ -5455,7 +5480,7 @@ mod tests {
   #[test]
   fn playlist_search_results_preserve_source_positions_and_handle_no_matches() {
     let (tx, rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     let playlist_id = playlist_id("37i9dQZF1DX4WYpdgoIcn6");
 
     app.track_table.context = Some(TrackTableContext::MyPlaylists);
@@ -5490,7 +5515,7 @@ mod tests {
   #[test]
   fn clearing_playlist_search_restores_cached_continuous_view() {
     let (tx, _rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     let playlist_id = playlist_id("37i9dQZF1DX4WYpdgoIcn6");
     let page = playlist_page(
       0,
@@ -5519,7 +5544,7 @@ mod tests {
   #[test]
   fn apply_sorted_playlist_tracks_if_current_requires_matching_playlist_identity_and_context() {
     let (tx, _rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     let sidebar_playlist_id = playlist_id("37i9dQZF1DXcBWIGoYBM5M");
     let active_playlist_id = playlist_id("37i9dQZF1DX4WYpdgoIcn6");
     let original_track = full_track("0000000000000000000001", "Original");
@@ -5551,7 +5576,7 @@ mod tests {
   #[test]
   fn editable_playlists_include_owned_and_collaborative_only() {
     let (tx, _rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     app.user = Some(user_info("spotatui-owner"));
     app.all_playlists = vec![
       playlist_info("37i9dQZF1DXcBWIGoYBM5M", "Owned", "spotatui-owner", false),
@@ -5576,7 +5601,7 @@ mod tests {
   #[test]
   fn begin_add_track_to_playlist_flow_requires_editable_playlist() {
     let (tx, _rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     app.user = Some(user_info("spotatui-owner"));
     app.playlists = Some(Paged {
       total: 1,
@@ -5605,7 +5630,7 @@ mod tests {
 
   fn make_app_simple() -> App {
     let (tx, _rx) = channel();
-    App::new(tx, UserConfig::new(), SystemTime::now())
+    App::new(tx, UserConfig::new(), Some(SystemTime::now()))
   }
 
   // Regression for transport-4: with no Spotify device volume and no pending
@@ -5679,7 +5704,7 @@ mod tests {
   #[test]
   fn current_route_playlist_track_table_requires_track_table_route() {
     let (tx, _rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     let playlist_id = playlist_id("37i9dQZF1DXcBWIGoYBM5M");
 
     app.track_table.context = Some(TrackTableContext::MyPlaylists);
@@ -5691,5 +5716,34 @@ mod tests {
 
     app.push_navigation_stack(RouteId::TrackTable, ActiveBlock::TrackTable);
     assert!(app.is_current_route_playlist_track_table_for(&playlist_id));
+  }
+
+  #[test]
+  fn poll_current_playback_skips_when_spotify_disconnected() {
+    let (tx, rx) = channel();
+    // No Spotify session (free-source launch): spotify_connected == false.
+    let mut app = App::new(tx, UserConfig::new(), None);
+    assert!(!app.spotify_connected);
+    // Force the poll interval to have elapsed so only the connection gate matters.
+    app.instant_since_last_current_playback_poll = Instant::now() - Duration::from_secs(10);
+
+    app.poll_current_playback();
+
+    // Nothing dispatched: no per-tick "connect Spotify" auth-spam for free sources.
+    assert!(rx.try_recv().is_err());
+    assert!(!app.is_fetching_current_playback);
+  }
+
+  #[test]
+  fn poll_current_playback_dispatches_when_spotify_connected() {
+    let (tx, rx) = channel();
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
+    assert!(app.spotify_connected);
+    app.instant_since_last_current_playback_poll = Instant::now() - Duration::from_secs(10);
+
+    app.poll_current_playback();
+
+    assert!(matches!(rx.try_recv(), Ok(IoEvent::GetCurrentPlayback)));
+    assert!(app.is_fetching_current_playback);
   }
 }

@@ -225,7 +225,7 @@ mod tests {
   #[test]
   fn playlist_sort_dispatches_for_current_playlist_table_id() {
     let (tx, rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     let sidebar_playlist = playlist_info(
       "37i9dQZF1DXcBWIGoYBM5M",
       "Sidebar Playlist",

@@ -626,7 +626,7 @@ mod tests {
     use std::time::SystemTime;
 
     let (tx, _rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     app.user_config.behavior.subsonic_url = Some("https://demo.navidrome.org".to_string());
     app.user_config.behavior.subsonic_username = Some("demo".to_string());
     app.user_config.behavior.subsonic_password = Some("demo".to_string());
@@ -706,7 +706,7 @@ mod tests {
     use std::time::SystemTime;
 
     let (tx, _rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     app.user_config.behavior.subsonic_url = Some("https://demo.navidrome.org".to_string());
     app.user_config.behavior.subsonic_username = Some("demo".to_string());
     app.user_config.behavior.subsonic_password = Some("demo".to_string());

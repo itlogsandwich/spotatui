@@ -257,7 +257,7 @@ mod tests {
   #[test]
   fn enter_playlist_dispatches_only_visible_page_load() {
     let (tx, rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     app.all_playlists = vec![playlist_info(
       "37i9dQZF1DXcBWIGoYBM5M",
       "Test Playlist",
@@ -284,7 +284,7 @@ mod tests {
   fn enter_on_local_folder_dispatches_get_local_tracks() {
     use crate::core::plugin_api::PlaylistInfo;
     let (tx, rx) = channel();
-    let mut app = App::new(tx, UserConfig::new(), SystemTime::now());
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
     app.active_source = Source::Local;
     app.local_playlists = vec![PlaylistInfo {
       uri: "file:///music/Jazz".to_string(),
@@ -326,7 +326,7 @@ mod tests {
       },
     ];
 
-    let mut app = App::new(tx, config, SystemTime::now());
+    let mut app = App::new(tx, config, Some(SystemTime::now()));
     app.active_source = Source::Radio;
     app.radio_stations = vec![
       TrackInfo {

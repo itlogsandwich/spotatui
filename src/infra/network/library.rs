@@ -285,7 +285,7 @@ impl Network {
     let mut all_results = Vec::with_capacity(uris.len());
     for batch in uri_batches(uris) {
       let batch_results = spotify_get_typed_compat_for_with_refresh::<Vec<bool>>(
-        &self.spotify,
+        self.spotify(),
         "me/library/contains",
         &[("uris", batch.join(","))],
         &self.token_cache_path,
@@ -305,7 +305,7 @@ impl Network {
 
     let query = vec![("uris", uris.join(","))];
     spotify_api_request_json_for_with_refresh(
-      &self.spotify,
+      self.spotify(),
       Method::PUT,
       "me/library",
       &query,
@@ -324,7 +324,7 @@ impl Network {
 
     let query = vec![("uris", uris.join(","))];
     spotify_api_request_json_for_with_refresh(
-      &self.spotify,
+      self.spotify(),
       Method::DELETE,
       "me/library",
       &query,
@@ -337,7 +337,7 @@ impl Network {
   }
 
   pub fn spawn_saved_tracks_prefetch(&self, offset: u32, generation: u64) {
-    let spotify = self.spotify.clone();
+    let spotify = self.spotify().clone();
     let app = self.app.clone();
     let token_cache_path = self.token_cache_path.clone();
     let large_search_limit = self.large_search_limit;
@@ -360,7 +360,7 @@ impl Network {
     offset: u32,
     generation: u64,
   ) {
-    let spotify = self.spotify.clone();
+    let spotify = self.spotify().clone();
     let app = self.app.clone();
     let token_cache_path = self.token_cache_path.clone();
     let large_search_limit = self.large_search_limit;
@@ -400,7 +400,7 @@ impl LibraryNetwork for Network {
       // which silently deduplicates keys (last-wins). This handles the known Spotify
       // API bug where "items" appears twice in the same JSON object.
       let page = match spotify_get_typed_compat_for_with_refresh::<Page<SimplifiedPlaylist>>(
-        &self.spotify,
+        self.spotify(),
         "me/playlists",
         &[("limit", limit.to_string()), ("offset", offset.to_string())],
         &self.token_cache_path,
@@ -479,7 +479,7 @@ impl LibraryNetwork for Network {
 
     let path = format!("playlists/{}/items", playlist_id.id());
     match spotify_get_typed_compat_for_with_refresh::<Page<PlaylistItem>>(
-      &self.spotify,
+      self.spotify(),
       &path,
       &[
         ("limit", self.large_search_limit.to_string()),
@@ -541,7 +541,7 @@ impl LibraryNetwork for Network {
     loop {
       let path = format!("playlists/{}/items", playlist_id.id());
       let page = match spotify_get_typed_compat_for_with_refresh::<Page<PlaylistItem>>(
-        &self.spotify,
+        self.spotify(),
         &path,
         &[("limit", limit.to_string()), ("offset", offset.to_string())],
         &self.token_cache_path,
@@ -599,7 +599,7 @@ impl LibraryNetwork for Network {
     }
 
     match spotify_get_typed_compat_for_with_refresh::<Page<rspotify::model::SavedTrack>>(
-      &self.spotify,
+      self.spotify(),
       "me/tracks",
       &query,
       &self.token_cache_path,
@@ -648,7 +648,7 @@ impl LibraryNetwork for Network {
     }
 
     match spotify_get_typed_compat_for_with_refresh::<Page<rspotify::model::SavedAlbum>>(
-      &self.spotify,
+      self.spotify(),
       "me/albums",
       &query,
       &self.token_cache_path,
@@ -775,7 +775,7 @@ impl LibraryNetwork for Network {
     }
 
     match spotify_get_typed_compat_for_with_refresh::<Page<rspotify::model::show::Show>>(
-      &self.spotify,
+      self.spotify(),
       "me/shows",
       &query,
       &self.token_cache_path,
@@ -804,7 +804,7 @@ impl LibraryNetwork for Network {
     _is_public: Option<bool>,
   ) {
     match self
-      .spotify
+      .spotify()
       .library_add([LibraryId::Playlist(playlist_id)])
       .await
     {
@@ -821,7 +821,7 @@ impl LibraryNetwork for Network {
     playlist_id: PlaylistId<'static>,
   ) {
     match self
-      .spotify
+      .spotify()
       .library_remove([LibraryId::Playlist(playlist_id)])
       .await
     {
@@ -838,7 +838,7 @@ impl LibraryNetwork for Network {
     track_id: TrackId<'static>,
   ) {
     match self
-      .spotify
+      .spotify()
       .playlist_add_items(playlist_id.clone(), vec![PlayableId::Track(track_id)], None)
       .await
     {
@@ -883,7 +883,7 @@ impl LibraryNetwork for Network {
     });
 
     match spotify_api_request_json_for_with_refresh(
-      &self.spotify,
+      self.spotify(),
       Method::DELETE,
       &format!("playlists/{}/tracks", playlist_id.id()),
       &[],
@@ -968,7 +968,7 @@ impl LibraryNetwork for Network {
     loop {
       let query = vec![("limit", limit.to_string()), ("offset", offset.to_string())];
       match spotify_get_typed_compat_for_with_refresh::<Page<PlaylistItem>>(
-        &self.spotify,
+        self.spotify(),
         &path,
         &query,
         &self.token_cache_path,
@@ -1035,7 +1035,7 @@ impl LibraryNetwork for Network {
       "description": "Created with spotatui"
     });
     let playlist_value = match spotify_api_request_json_for_with_refresh(
-      &self.spotify,
+      self.spotify(),
       Method::POST,
       &create_path,
       &[],
@@ -1076,7 +1076,7 @@ impl LibraryNetwork for Network {
         .map(|id| rspotify::model::idtypes::PlayableId::Track(id.clone()))
         .collect();
       if let Err(e) = self
-        .spotify
+        .spotify()
         .playlist_add_items(playlist_id, items, None)
         .await
       {
