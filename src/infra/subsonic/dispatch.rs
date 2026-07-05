@@ -137,7 +137,7 @@ pub async fn route_subsonic_event(app: &Arc<Mutex<App>>, event: &IoEvent) -> boo
 /// Build a [`SubsonicSource`] from the saved server config, with the password
 /// taken from the `SPOTATUI_SUBSONIC_PASSWORD` env var when set. Returns `None`
 /// (after surfacing a status message) when no server URL is configured.
-async fn build_source(app: &Arc<Mutex<App>>) -> Option<SubsonicSource> {
+pub(crate) async fn build_source(app: &Arc<Mutex<App>>) -> Option<SubsonicSource> {
   let (url, username, config_password) = {
     let guard = app.lock().await;
     let behavior = &guard.user_config.behavior;
@@ -344,6 +344,17 @@ async fn download_track(source: &SubsonicSource, track_id: &str) -> Result<Named
   Ok(tmp)
 }
 
+/// Download the track at `uri` into a tempfile, for the native queue engine's
+/// off-pump fetch (playing is the queue's job — it re-checks that the queue
+/// slot is still current before touching the shared player).
+pub(crate) async fn download_for_queue(
+  source: &SubsonicSource,
+  uri: &str,
+) -> Result<NamedTempFile> {
+  let track_id = track_id_from_uri(uri)?.to_string();
+  download_track(source, &track_id).await
+}
+
 /// Begin playing a queue of subsonic tracks, taking over the session and
 /// starting at `start_idx` (clamped into range).
 async fn start_subsonic_queue(app: &Arc<Mutex<App>>, uris: &[String], start_idx: usize) {
@@ -461,7 +472,7 @@ enum Plan {
 /// A download failure tears the session down (deliberate divergence from the
 /// local source's skip-past): on a network outage, walking the whole queue at
 /// tick speed would spray error toasts, so one failure ends playback instead.
-async fn play_index(app: &Arc<Mutex<App>>, target: usize) {
+pub(crate) async fn play_index(app: &Arc<Mutex<App>>, target: usize) {
   let plan = {
     let guard = app.lock().await;
     match guard.subsonic_playback.as_ref() {

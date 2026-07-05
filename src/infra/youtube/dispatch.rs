@@ -142,7 +142,7 @@ pub async fn route_youtube_event(app: &Arc<Mutex<App>>, event: &IoEvent) -> bool
 /// override, else `yt-dlp` on `$PATH`). Unlike Subsonic there is nothing that
 /// can be "unconfigured" — a missing binary surfaces as an actionable error
 /// from the first search instead.
-async fn build_source(app: &Arc<Mutex<App>>) -> YouTubeSource {
+pub(crate) async fn build_source(app: &Arc<Mutex<App>>) -> YouTubeSource {
   let ytdlp_path = app.lock().await.user_config.behavior.ytdlp_path.clone();
   YouTubeSource::new(ytdlp_path)
 }
@@ -492,6 +492,14 @@ async fn download_audio(source: &YouTubeSource, video_id: &str) -> Result<NamedT
   Ok(tmp)
 }
 
+/// Download the audio for `uri` into a tempfile, for the native queue engine's
+/// off-pump fetch (playing is the queue's job — it re-checks that the queue
+/// slot is still current before touching the shared player).
+pub(crate) async fn download_for_queue(source: &YouTubeSource, uri: &str) -> Result<NamedTempFile> {
+  let video_id = video_id_from_uri(uri)?.to_string();
+  download_audio(source, &video_id).await
+}
+
 /// Decode-failure hint: without ffmpeg on `$PATH`, yt-dlp leaves the download
 /// as a fragmented DASH container some decoders reject.
 fn decode_hint(e: impl std::fmt::Display) -> String {
@@ -631,7 +639,7 @@ enum Plan {
 /// A download failure tears the session down (same rationale as Subsonic): on
 /// a network outage or a broken extractor, walking the whole queue at tick
 /// speed would spray error toasts, so one failure ends playback instead.
-async fn play_index(app: &Arc<Mutex<App>>, target: usize) {
+pub(crate) async fn play_index(app: &Arc<Mutex<App>>, target: usize) {
   let plan = {
     let guard = app.lock().await;
     match guard.youtube_playback.as_ref() {

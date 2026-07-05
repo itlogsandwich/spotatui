@@ -190,6 +190,8 @@ There is also a CLI that is able to do most of the stuff the UI does. Use `spota
 
 See [Keybindings Wiki](https://github.com/LargeModGames/spotatui/wiki/Keybindings) for the full list of keyboard shortcuts.
 
+**Play queue**: press `z` on any track to add it to a native queue that plays across all sources (Spotify, Local Files, Subsonic, YouTube) before your current playlist/album context resumes. Open the queue with `Shift+Q` to remove an item (`x`, configurable via `remove_from_queue`), reorder it (`J`/`K`), or press `Enter` to skip ahead and play it now.
+
 Here are some example to get you excited.
 ```
 spotatui --completions zsh # Prints shell completions for zsh to stdout (bash, power-shell and more are supported)

@@ -216,6 +216,37 @@ async fn handle_player_events(
         track_id,
         position_ms,
       } => {
+        // While the native queue is mid-handoff or playing a *decoded* track,
+        // librespot must stay paused. The handoff pauses Spirc, but a
+        // self-advance load (or a stale-slot reissue) already in flight at that
+        // moment can complete afterwards and start audio over the queue slot —
+        // re-pause instead of accepting the state update. Librespot playing is
+        // legitimate here only when the slot itself is a Spotify track; with a
+        // decoded slot, or with a context suspended under the queue and no
+        // Spotify slot (the between-items window: the old slot is cleared, the
+        // next one not yet published), it never is. One-shot: a paused Spirc
+        // emits no further Playing events, so this can't ping-pong.
+        {
+          let stray_over_queue = {
+            let guard = app.lock().await;
+            let decoded_slot = {
+              #[cfg(feature = "audio-decode")]
+              {
+                guard.queue_now_decoded_player().is_some()
+              }
+              #[cfg(not(feature = "audio-decode"))]
+              {
+                false
+              }
+            };
+            !guard.queue_now_is_spotify() && (decoded_slot || guard.queue_suspended.is_some())
+          };
+          if stray_over_queue {
+            player.pause();
+            continue;
+          }
+        }
+
         // Playback is actually working: reset the failure streak.
         consecutive_unavailable = 0;
         shared_is_playing.store(true, Ordering::Relaxed);
@@ -392,9 +423,24 @@ async fn handle_player_events(
         });
 
         app.song_progress_ms = 0;
-        app.last_track_id = Some(audio_item.track_id.to_string());
+        let playing_id = audio_item.track_id.to_string();
+        app.last_track_id = Some(playing_id.clone());
         app.instant_since_last_current_playback_poll = std::time::Instant::now();
         app.dispatch(IoEvent::GetCurrentPlayback);
+
+        // Spirc self-advance guard: a queued Spotify track plays via a direct
+        // `player.load` (no Spirc context), so Spirc can switch to the next
+        // context track on its own. If that happened, reissue the queued track
+        // (bounded). NOTE: pending the live experiment in the plan (Risk #1),
+        // this mitigation is unverified without a real Spotify session.
+        let reload_uri = app.spotify_queue_guard_reload_uri(&playing_id);
+        drop(app);
+        if let Some(uri) = reload_uri {
+          info!("spirc advanced off the queued track; reissuing {}", uri);
+          if let Err(e) = player.play_uri(&uri).await {
+            info!("failed to reissue queued Spotify track: {}", e);
+          }
+        }
       }
       PlayerEvent::Stopped { .. } => {
         #[cfg(all(feature = "mpris", target_os = "linux"))]
@@ -443,7 +489,13 @@ async fn handle_player_events(
           windows_media.set_stopped();
         }
 
-        if let Ok(mut app) = app.try_lock() {
+        // Full `lock().await`, not `try_lock`: this arm decides whether the
+        // native queue takes over, and a dropped decision here strands the
+        // queue (nothing advances, nothing continues). The render loop holds
+        // the app mutex a large fraction of the time, so a single try_lock
+        // attempt loses this race routinely.
+        {
+          let mut app = app.lock().await;
           if let Some(ref mut ctx) = app.current_playback_context {
             ctx.is_playing = false;
           }
@@ -456,9 +508,17 @@ async fn handle_player_events(
         }
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        if let Ok(mut app) = app.try_lock() {
+        {
+          let mut app = app.lock().await;
           if !app.user_config.behavior.stop_after_current_track {
-            app.dispatch(IoEvent::EnsurePlaybackContinues(track_id.to_string()));
+            // The native queue takes priority: a queued Spotify track that just
+            // ended advances the queue; a context track that ended while items
+            // wait suspends the context (preempting Spirc's self-advance) and
+            // hands off to the queue. Only when neither applies do we fall back
+            // to the normal continue-playback path.
+            if !app.handle_native_spotify_track_end() {
+              app.dispatch(IoEvent::EnsurePlaybackContinues(track_id.to_string()));
+            }
           }
         }
       }
