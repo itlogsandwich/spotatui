@@ -370,6 +370,11 @@ pub fn get_help_docs(app: &App) -> Vec<Vec<String>> {
       String::from("Queue"),
     ],
     vec![
+      String::from("Play selected queue item (skip ahead to it)"),
+      String::from("<Enter>"),
+      String::from("Queue"),
+    ],
+    vec![
       String::from("Toggle saved state for currently playing track/episode"),
       key_bindings.like_track.to_string(),
       String::from("General"),

@@ -87,6 +87,123 @@ fn queue_item_line(item: &PlayableInfo) -> String {
   }
 }
 
+/// Build the dimmed "up next from context" preview rows shown under the native
+/// queue: what resumes once the queue drains. Returns an empty vector when
+/// nothing is suspended and no queued items are pending, so `draw_queue` omits
+/// the section entirely.
+///
+/// The source of truth is [`App::queue_suspended`](crate::core::app::App) when
+/// the queue is draining over a suspended context; otherwise (queued items
+/// pending over a still-playing context) it is that context's own upcoming
+/// tracks. Rows read from the still-alive per-source `*_playback` state.
+fn context_preview_lines(app: &App, max: usize) -> Vec<String> {
+  // Format the upcoming rows of a Subsonic/YouTube `TrackInfo` context list.
+  #[cfg(any(feature = "subsonic", feature = "youtube"))]
+  fn track_rows(
+    tracks: &[crate::core::plugin_api::TrackInfo],
+    start: usize,
+    max: usize,
+  ) -> Vec<String> {
+    tracks
+      .iter()
+      .skip(start)
+      .take(max)
+      .map(|t| format!("{} - {}", t.name, t.artists.join(", ")))
+      .collect()
+  }
+
+  // Local queues are `file://` URIs only (no API metadata), so display the
+  // file name stem for each upcoming track.
+  #[cfg(feature = "local-files")]
+  fn local_rows(uris: &[String], start: usize, max: usize) -> Vec<String> {
+    uris
+      .iter()
+      .skip(start)
+      .take(max)
+      .map(|u| {
+        let trimmed = u.trim_start_matches("file://");
+        std::path::Path::new(trimmed)
+          .file_stem()
+          .and_then(|s| s.to_str())
+          .map(|s| s.to_string())
+          .unwrap_or_else(|| u.clone())
+      })
+      .collect()
+  }
+
+  // The Spotify Web-API mirror's upcoming list (native or external context).
+  let spotify_mirror = |max: usize| -> Vec<String> {
+    app
+      .queue
+      .as_ref()
+      .map(|q| q.queue.iter().take(max).map(queue_item_line).collect())
+      .unwrap_or_default()
+  };
+
+  // 1. A suspended context is authoritative: the queue is draining over it.
+  #[cfg(any(
+    feature = "streaming",
+    feature = "local-files",
+    feature = "subsonic",
+    feature = "youtube",
+    feature = "internet-radio"
+  ))]
+  if let Some(ctx) = app.queue_suspended.as_ref() {
+    use crate::core::queue::SuspendedContext;
+    return match ctx {
+      #[cfg(feature = "streaming")]
+      SuspendedContext::Spotify { .. } => spotify_mirror(max),
+      #[cfg(feature = "local-files")]
+      SuspendedContext::Local { resume_index, .. } => {
+        match (resume_index, app.local_playback.as_ref()) {
+          (Some(i), Some(s)) => local_rows(&s.queue, *i, max),
+          _ => Vec::new(),
+        }
+      }
+      #[cfg(feature = "subsonic")]
+      SuspendedContext::Subsonic { resume_index, .. } => {
+        match (resume_index, app.subsonic_playback.as_ref()) {
+          (Some(i), Some(s)) => track_rows(&s.tracks, *i, max),
+          _ => Vec::new(),
+        }
+      }
+      #[cfg(feature = "youtube")]
+      SuspendedContext::YouTube { resume_index, .. } => {
+        match (resume_index, app.youtube_playback.as_ref()) {
+          (Some(i), Some(s)) => track_rows(&s.tracks, *i, max),
+          _ => Vec::new(),
+        }
+      }
+      #[cfg(feature = "internet-radio")]
+      SuspendedContext::Radio { station } => vec![format!("Resumes: {}", station.name)],
+    };
+  }
+
+  // 2. Queued items pending over a still-playing context: preview what resumes
+  //    after them (the context's upcoming tracks, from the next index on).
+  if !app.native_queue.is_empty() {
+    #[cfg(feature = "local-files")]
+    if let Some(s) = app.local_playback.as_ref() {
+      return local_rows(&s.queue, s.index + 1, max);
+    }
+    #[cfg(feature = "subsonic")]
+    if let Some(s) = app.subsonic_playback.as_ref() {
+      return track_rows(&s.tracks, s.index + 1, max);
+    }
+    #[cfg(feature = "youtube")]
+    if let Some(s) = app.youtube_playback.as_ref() {
+      return track_rows(&s.tracks, s.index + 1, max);
+    }
+    #[cfg(feature = "internet-radio")]
+    if let Some(s) = app.radio_playback.as_ref() {
+      return vec![format!("Resumes: {}", s.station.name)];
+    }
+    return spotify_mirror(max);
+  }
+
+  Vec::new()
+}
+
 pub fn draw_queue(f: &mut Frame<'_>, app: &App) {
   let [area] = f
     .area()
@@ -126,7 +243,9 @@ pub fn draw_queue(f: &mut Frame<'_>, app: &App) {
           items.push(ListItem::new(queue_item_line(item)).style(style));
         }
       }
-    } else {
+    } else if !app.queue_owns_playback() {
+      // While the queue owns playback the last queued track is the "Now playing"
+      // row above, so an "empty" hint would contradict it — omit it there.
       items.push(
         ListItem::new(Span::raw("Queue is empty — press z on a track to add it")).style(style),
       );
@@ -138,6 +257,22 @@ pub fn draw_queue(f: &mut Frame<'_>, app: &App) {
       ));
       let line = format!("{} - {}  [{}]", track.name, track.artists.join(", "), label);
       items.push(ListItem::new(line).style(style));
+    }
+  }
+
+  // Dimmed, non-selectable preview of what resumes once the queue drains. It is
+  // appended after the selectable native-queue rows; selection stays confined to
+  // those rows (queue_menu.rs counts only `1 + native_queue.len()` rows), so
+  // these extra rows never receive the highlight.
+  let preview = context_preview_lines(app, 5);
+  if !preview.is_empty() {
+    let header_style = Style::default().fg(app.user_config.theme.hint);
+    let row_style = Style::default()
+      .fg(app.user_config.theme.inactive)
+      .add_modifier(Modifier::DIM);
+    items.push(ListItem::new(Span::styled("Up next from context:", header_style)).style(style));
+    for line in preview {
+      items.push(ListItem::new(Span::styled(line, row_style)).style(style));
     }
   }
 
@@ -155,7 +290,10 @@ pub fn draw_queue(f: &mut Frame<'_>, app: &App) {
         .borders(Borders::ALL)
         .style(style)
         .title(Span::styled(
-          "Queue  (x remove · J/K move · Enter play · Esc back)",
+          format!(
+            "Queue  ({} remove · J/K move · Enter play · Esc back)",
+            app.user_config.keys.remove_from_queue
+          ),
           style,
         ))
         .border_style(style),
