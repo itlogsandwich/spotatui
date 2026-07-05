@@ -50,6 +50,15 @@ pub trait PlaybackNetwork {
   #[cfg(feature = "streaming")]
   async fn auto_select_streaming_device(&mut self, device_name: String, persist_device_id: bool);
   async fn ensure_playback_continues(&mut self, previous_track_id: String);
+  /// Resume a native-Spotify context suspended under the native queue, targeting
+  /// the resume track via an offset URI. Falls back to playing just the track
+  /// when there is no context, and to a "Queue finished" status when neither is
+  /// known.
+  async fn resume_spotify_context(
+    &mut self,
+    context_uri: Option<String>,
+    resume_track_uri: Option<String>,
+  );
   #[allow(dead_code)]
   async fn add_item_to_queue(&mut self, item: PlayableId<'static>);
   async fn get_queue(&mut self);
@@ -1755,6 +1764,40 @@ impl PlaybackNetwork for Network {
     }
   }
 
+  async fn resume_spotify_context(
+    &mut self,
+    context_uri: Option<String>,
+    resume_track_uri: Option<String>,
+  ) {
+    use crate::infra::network::ids;
+    let context = context_uri.as_deref().and_then(ids::play_context_id);
+    let track = resume_track_uri.as_deref().and_then(ids::playable_id);
+
+    // Reuse the existing `start_playback` machinery (device activation/transfer
+    // included). Passing the resume track as a single-item `uris` alongside the
+    // context yields an offset-by-uri start (see `api_playback_offset_json` /
+    // `native_load_request`), i.e. the context resumes at that track. A plain
+    // `spirc.play()` can't do this after a direct `player.load`, which is why
+    // the context is re-loaded here.
+    match (context, track) {
+      (Some(context), Some(track)) => {
+        self
+          .start_playback(Some(context), Some(vec![track]), None)
+          .await;
+      }
+      (Some(context), None) => {
+        self.start_playback(Some(context), None, None).await;
+      }
+      (None, Some(track)) => {
+        self.start_playback(None, Some(vec![track]), None).await;
+      }
+      (None, None) => {
+        let mut app = self.app.lock().await;
+        app.set_status_message("Queue finished", 3);
+      }
+    }
+  }
+
   async fn add_item_to_queue(&mut self, item: PlayableId<'static>) {
     match self
       .spotify_api_request_json(
@@ -2255,5 +2298,35 @@ mod tests {
         api_device_is_native: false,
       },
     ));
+  }
+
+  /// With neither a context uri nor a resume track, resuming has nothing to do:
+  /// it reports the queue as finished rather than issuing a playback request.
+  #[tokio::test]
+  async fn resume_spotify_context_with_nothing_known_finishes_the_queue() {
+    use crate::core::app::App;
+    use crate::core::config::ClientConfig;
+    use crate::core::user_config::UserConfig;
+    use std::sync::mpsc::channel;
+    use std::time::SystemTime;
+
+    let (io_tx, _rx) = channel();
+    let app = std::sync::Arc::new(tokio::sync::Mutex::new(App::new(
+      io_tx,
+      UserConfig::new(),
+      Some(SystemTime::now()),
+    )));
+    // No Spotify client is needed: the both-None arm never reaches `spotify()`.
+    let mut network = Network::new(
+      None,
+      ClientConfig::new(),
+      &app,
+      std::env::temp_dir().join("spotatui_resume_context_test.json"),
+    );
+
+    network.resume_spotify_context(None, None).await;
+
+    let guard = app.lock().await;
+    assert_eq!(guard.status_message.as_deref(), Some("Queue finished"));
   }
 }

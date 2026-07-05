@@ -66,10 +66,10 @@ pub fn source_available(source: QueueItemSource) -> bool {
 /// valid, always-`None` type.
 #[derive(Debug, Clone)]
 pub enum SuspendedContext {
-  // Constructed in Phase 3 (Spirc preemption); defined now so the enum is
-  // stable and the resume path can already match it.
+  /// Snapshot of the native-Spotify context to resume once the queue drains:
+  /// the context uri and the resume-target track uri (the head of the Spotify
+  /// mirror queue at suspension time).
   #[cfg(feature = "streaming")]
-  #[allow(dead_code)]
   Spotify {
     context_uri: Option<String>,
     resume_track_uri: Option<String>,

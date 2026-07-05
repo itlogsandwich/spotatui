@@ -102,9 +102,8 @@ pub enum QueueNowPlaying {
   #[cfg(feature = "audio-decode")]
   Decoded(DecodedQueuePlayback),
   /// A Spotify track playing via native streaming (`player.load`, no Spirc
-  /// context). Constructed in Phase 3; defined now so the enum is stable.
+  /// context).
   #[cfg(feature = "streaming")]
-  #[allow(dead_code)]
   Spotify {
     track: crate::core::plugin_api::TrackInfo,
   },

@@ -847,6 +847,13 @@ pub struct App {
   /// [`Self::queue_owns_playback`] accessor.
   #[cfg(any(feature = "streaming", feature = "audio-decode"))]
   pub queue_now: Option<crate::infra::queue::QueueNowPlaying>,
+  /// Bounded retry guard for the native-Spotify queue slot. When a queued
+  /// Spotify track is playing via a direct `player.load` (no Spirc context) and
+  /// Spirc self-advances to a different track, the player-event handler reissues
+  /// the queued track and increments this. Reset to 0 each time a new Spotify
+  /// queue slot is published; capped so a genuinely-gone track can't loop.
+  #[cfg(feature = "streaming")]
+  pub spotify_queue_guard_reloads: u8,
   #[cfg(feature = "cover-art")]
   pub cover_art: crate::tui::cover_art::CoverArt,
   /// Status of the current track's cover art, driving the placeholder message.
@@ -1230,6 +1237,8 @@ impl Default for App {
       queue_suspended: None,
       #[cfg(any(feature = "streaming", feature = "audio-decode"))]
       queue_now: None,
+      #[cfg(feature = "streaming")]
+      spotify_queue_guard_reloads: 0,
       input: vec![],
       input_idx: 0,
       input_cursor_position: 0,
@@ -2784,6 +2793,13 @@ impl App {
     let name = track.name.clone();
     self.native_queue.push(track);
     self.set_status_message(format!("Queued: {name}"), 3);
+    // Keep the Spotify mirror queue ([`Self::queue`]) current while a native
+    // Spotify context is playing: it is the snapshot source for the resume
+    // target when this newly-queued item later suspends the context.
+    #[cfg(feature = "streaming")]
+    if self.is_native_streaming_active_for_playback() && !self.queue_owns_playback() {
+      self.dispatch(IoEvent::GetQueue);
+    }
   }
 
   /// Whether the native queue's playback slot currently owns the output (either a
@@ -2937,6 +2953,103 @@ impl App {
         station: radio.station,
       });
     }
+  }
+
+  /// Snapshot how to resume the underlying native-Spotify context once the
+  /// native queue drains, and record it in [`Self::queue_suspended`]. Skip
+  /// semantics: `resume_track_uri` is the head of the Spotify mirror queue
+  /// ([`Self::queue`]) — i.e. the *next* track Spirc would have played — so the
+  /// context resumes at its next track, matching Spotify's own queue behavior.
+  /// Either field is `None` when the corresponding state is unknown; the resume
+  /// handler degrades gracefully (context-only, or track-only, or "finished").
+  #[cfg(feature = "streaming")]
+  pub(crate) fn suspend_native_spotify_context_for_queue(&mut self) {
+    let context_uri = self
+      .current_playback_context
+      .as_ref()
+      .and_then(|ctx| ctx.context.as_ref())
+      .map(|c| c.uri.clone());
+    let resume_track_uri = self
+      .queue
+      .as_ref()
+      .and_then(|q| q.queue.first())
+      .and_then(|item| match item {
+        crate::core::plugin_api::PlayableInfo::Track(t) => t.uri.clone(),
+        crate::core::plugin_api::PlayableInfo::Episode(e) => e.uri.clone(),
+      });
+    self.queue_suspended = Some(crate::core::queue::SuspendedContext::Spotify {
+      context_uri,
+      resume_track_uri,
+    });
+  }
+
+  /// Handle a native-streaming `EndOfTrack` while the native queue is in play.
+  ///
+  /// Returns `true` when the queue took over (an `AdvanceNativeQueue` was
+  /// dispatched, so the caller must **not** fall back to
+  /// `EnsurePlaybackContinues`), `false` to let the normal continue-playback path
+  /// run. Two cases:
+  ///
+  /// - **A queued Spotify track just ended** (`queue_owns_playback`): advance to
+  ///   the next queued item (or resume when the queue drains).
+  /// - **A context track ended with items waiting** (queue idle, non-empty):
+  ///   snapshot the Spotify context for resume, `pause()` the streaming player to
+  ///   preempt Spirc's own auto-advance, then advance the queue.
+  #[cfg(feature = "streaming")]
+  pub(crate) fn handle_native_spotify_track_end(&mut self) -> bool {
+    if self.queue_owns_playback() {
+      self.song_progress_ms = 0;
+      self.dispatch(IoEvent::AdvanceNativeQueue);
+      return true;
+    }
+    if !self.native_queue.is_empty() {
+      self.suspend_native_spotify_context_for_queue();
+      // Preempt Spirc: after a direct `player.load`, Spirc may try to advance to
+      // the next context track on its own. Pausing first stops that before the
+      // queue slot takes the sink.
+      if let Some(player) = self.streaming_player.as_ref() {
+        player.pause();
+      }
+      self.song_progress_ms = 0;
+      self.dispatch(IoEvent::AdvanceNativeQueue);
+      return true;
+    }
+    false
+  }
+
+  /// Spirc self-advance guard for the native-Spotify queue slot.
+  ///
+  /// A queued Spotify track plays via a direct `player.load` (no Spirc context),
+  /// so Spirc may try to advance to the next context track on its own when the
+  /// queued track ends. Given the base62 id of the track librespot just switched
+  /// to, this returns `Some(uri)` to reissue the queued track (Spirc fought
+  /// back), or `None` to leave playback alone. Bounded by
+  /// [`Self::spotify_queue_guard_reloads`] so a genuinely-gone track can't wedge
+  /// a reload loop; the budget resets whenever the queued track is confirmed
+  /// playing. See Risk #1 in the plan — the mitigation is pending a live
+  /// experiment and cannot be verified without a real Spotify session.
+  #[cfg(feature = "streaming")]
+  pub(crate) fn spotify_queue_guard_reload_uri(
+    &mut self,
+    playing_base62_id: &str,
+  ) -> Option<String> {
+    let queued_uri = match self.queue_now.as_ref()? {
+      #[cfg(feature = "audio-decode")]
+      QueueNowPlaying::Decoded(_) => return None,
+      QueueNowPlaying::Spotify { track } => track.uri.clone(),
+    }?;
+    let queued_id = queued_uri.rsplit(':').next().unwrap_or(queued_uri.as_str());
+    if queued_id == playing_base62_id {
+      // The queued track is (re)confirmed playing: clear the retry budget.
+      self.spotify_queue_guard_reloads = 0;
+      return None;
+    }
+    const MAX_RELOADS: u8 = 2;
+    if self.spotify_queue_guard_reloads >= MAX_RELOADS {
+      return None;
+    }
+    self.spotify_queue_guard_reloads += 1;
+    Some(queued_uri)
   }
 
   /// Whether any decoded-audio source (local file, Subsonic, internet radio, or
@@ -3291,6 +3404,19 @@ impl App {
     // Use native streaming player for instant control (bypasses event channel latency)
     #[cfg(feature = "streaming")]
     if self.is_native_streaming_active_for_playback() {
+      // A native-Spotify context is playing with items waiting in the queue:
+      // suspend it (skip semantics) and hand the sink to the queue instead of
+      // Spirc-advancing the context. (`queue_owns_playback` is already handled
+      // above, so here the context, not a queued track, is playing.)
+      if !self.native_queue.is_empty() {
+        self.suspend_native_spotify_context_for_queue();
+        if let Some(player) = self.streaming_player.as_ref() {
+          player.pause();
+        }
+        self.song_progress_ms = 0;
+        self.dispatch(IoEvent::AdvanceNativeQueue);
+        return;
+      }
       if let Some(ref player) = self.streaming_player {
         player.activate();
         player.next();
@@ -5553,6 +5679,132 @@ mod tests {
       currently_playing_type: CurrentlyPlayingType::Track,
       actions: Actions::default(),
     }
+  }
+
+  #[cfg(feature = "streaming")]
+  #[allow(deprecated)]
+  fn context_playing(context_uri: &str) -> CurrentPlaybackContext {
+    use rspotify::model::{context::Context, Type};
+    let mut ctx = make_external_context();
+    ctx.context = Some(Context {
+      uri: context_uri.to_string(),
+      href: String::new(),
+      external_urls: HashMap::new(),
+      _type: Type::Playlist,
+    });
+    ctx
+  }
+
+  /// The suspension snapshot records the context's uri and, as the resume target,
+  /// the head of the Spotify mirror queue (the *next* track Spirc would play).
+  #[cfg(feature = "streaming")]
+  #[test]
+  fn suspend_native_spotify_context_snapshots_context_and_next_track() {
+    use crate::core::plugin_api::PlayableInfo;
+    use crate::core::queue::SuspendedContext;
+    let (tx, _rx) = channel();
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
+    app.current_playback_context = Some(context_playing("spotify:playlist:ctx123"));
+    app.queue = Some(QueueState {
+      currently_playing: Some(PlayableInfo::Track(queue_track(
+        Some("spotify:track:current"),
+        "Current",
+      ))),
+      queue: vec![
+        PlayableInfo::Track(queue_track(Some("spotify:track:next1"), "Next One")),
+        PlayableInfo::Track(queue_track(Some("spotify:track:next2"), "Next Two")),
+      ],
+    });
+
+    app.suspend_native_spotify_context_for_queue();
+
+    match app.queue_suspended {
+      Some(SuspendedContext::Spotify {
+        context_uri,
+        resume_track_uri,
+      }) => {
+        assert_eq!(context_uri.as_deref(), Some("spotify:playlist:ctx123"));
+        assert_eq!(resume_track_uri.as_deref(), Some("spotify:track:next1"));
+      }
+      other => panic!("expected a Spotify suspension, got {other:?}"),
+    }
+  }
+
+  /// With no mirror queue or context, the snapshot degrades to all-None (the
+  /// resume handler then finishes the queue rather than panicking).
+  #[cfg(feature = "streaming")]
+  #[test]
+  fn suspend_native_spotify_context_degrades_to_none_without_state() {
+    use crate::core::queue::SuspendedContext;
+    let (tx, _rx) = channel();
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
+
+    app.suspend_native_spotify_context_for_queue();
+
+    match app.queue_suspended {
+      Some(SuspendedContext::Spotify {
+        context_uri,
+        resume_track_uri,
+      }) => {
+        assert!(context_uri.is_none());
+        assert!(resume_track_uri.is_none());
+      }
+      other => panic!("expected a Spotify suspension, got {other:?}"),
+    }
+  }
+
+  /// When the native queue slot owns playback, `next_track` advances the queue
+  /// instead of driving the streaming player's own `next`.
+  #[cfg(feature = "streaming")]
+  #[test]
+  fn next_track_advances_native_queue_when_queue_owns_playback() {
+    use crate::infra::queue::QueueNowPlaying;
+    let (tx, rx) = channel();
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
+    app.queue_now = Some(QueueNowPlaying::Spotify {
+      track: queue_track(Some("spotify:track:queued"), "Queued"),
+    });
+
+    app.next_track();
+
+    // The first dispatched event is the queue advance, not a Spotify NextTrack.
+    assert!(
+      matches!(rx.recv().unwrap(), IoEvent::AdvanceNativeQueue),
+      "expected AdvanceNativeQueue to be dispatched first"
+    );
+  }
+
+  /// The Spirc self-advance guard reissues the queued track only when Spirc has
+  /// switched away from it, and only within its bounded retry budget.
+  #[cfg(feature = "streaming")]
+  #[test]
+  fn spotify_queue_guard_reissues_only_on_mismatch_and_within_budget() {
+    use crate::infra::queue::QueueNowPlaying;
+    let (tx, _rx) = channel();
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
+    app.queue_now = Some(QueueNowPlaying::Spotify {
+      track: queue_track(Some("spotify:track:queued"), "Queued"),
+    });
+
+    // Same track (base62 id): no reissue, budget stays clear.
+    assert_eq!(app.spotify_queue_guard_reload_uri("queued"), None);
+    assert_eq!(app.spotify_queue_guard_reloads, 0);
+
+    // Spirc switched away: reissue our track, up to the cap, then stop.
+    assert_eq!(
+      app.spotify_queue_guard_reload_uri("other").as_deref(),
+      Some("spotify:track:queued")
+    );
+    assert_eq!(
+      app.spotify_queue_guard_reload_uri("other").as_deref(),
+      Some("spotify:track:queued")
+    );
+    assert_eq!(app.spotify_queue_guard_reload_uri("other"), None);
+    assert_eq!(app.spotify_queue_guard_reloads, 2);
+
+    // The queued track being confirmed playing again resets the budget.
+    assert_eq!(app.spotify_queue_guard_reload_uri("queued"), None);
+    assert_eq!(app.spotify_queue_guard_reloads, 0);
   }
 
   #[test]

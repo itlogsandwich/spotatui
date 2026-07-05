@@ -122,8 +122,9 @@ pub enum IoEvent {
   /// never reaches the Spotify network handler.
   AdvanceNativeQueue,
   /// Resume a suspended native-streaming Spotify context after the native queue
-  /// drains (context URI, resume-track URI). Implemented in Phase 3; the network
-  /// handler arm is a no-op until then.
+  /// drains (context URI, resume-track URI). Re-loads the context on the native
+  /// device via the existing `start_playback` machinery. `allow(dead_code)`:
+  /// only constructed under `streaming`, but the handler arm is unconditional.
   #[allow(dead_code)]
   ResumeSpotifyContext(Option<String>, Option<String>),
   IncrementGlobalSongCount,
@@ -629,8 +630,11 @@ impl Network {
       // Consumed by the queue router before it reaches the network; only lands
       // here if the router somehow let it through. No Spotify work to do.
       IoEvent::AdvanceNativeQueue => {}
-      // Phase 3 wires the actual context resume; a no-op for now.
-      IoEvent::ResumeSpotifyContext(..) => {}
+      IoEvent::ResumeSpotifyContext(context_uri, resume_track_uri) => {
+        self
+          .resume_spotify_context(context_uri, resume_track_uri)
+          .await;
+      }
       IoEvent::IncrementGlobalSongCount => {
         self.increment_global_song_count().await;
       }

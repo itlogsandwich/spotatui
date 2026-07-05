@@ -16,7 +16,14 @@ use tokio::sync::Mutex;
 
 use crate::core::app::App;
 use crate::core::plugin_api::TrackInfo;
-use crate::core::queue::{queue_item_source, source_available, source_label, QueueItemSource};
+#[cfg(any(
+  feature = "local-files",
+  feature = "subsonic",
+  feature = "youtube",
+  feature = "streaming"
+))]
+use crate::core::queue::QueueItemSource;
+use crate::core::queue::{queue_item_source, source_available, source_label};
 use crate::infra::network::IoEvent;
 
 #[cfg(feature = "audio-decode")]
@@ -176,19 +183,8 @@ async fn try_play_queued(app: &Arc<Mutex<App>>, track: &TrackInfo) -> bool {
     QueueItemSource::Subsonic => play_queued_subsonic(app, track, &uri).await,
     #[cfg(feature = "youtube")]
     QueueItemSource::YouTube => play_queued_youtube(app, track, &uri).await,
-    QueueItemSource::Spotify => {
-      // Phase 3 plays queued Spotify tracks via native streaming; until then,
-      // skip them with a note rather than stalling the queue.
-      set_status(
-        app,
-        format!(
-          "Queued Spotify track \"{}\" needs native streaming (coming soon)",
-          track.name
-        ),
-      )
-      .await;
-      false
-    }
+    #[cfg(feature = "streaming")]
+    QueueItemSource::Spotify => play_queued_spotify(app, track, &uri).await,
     // Reached only when a source is `source_available` but its play arm is
     // cfg'd out — impossible (the check above *is* the cfg gate), but the match
     // must be exhaustive across builds.
@@ -271,6 +267,55 @@ async fn play_queued_youtube(app: &Arc<Mutex<App>>, track: &TrackInfo, uri: &str
       false
     }
   }
+}
+
+/// Play a queued Spotify track through the native streaming player via a direct
+/// `player.load` (no Spirc context), publishing a Spotify queue slot. Requires a
+/// connected streaming player; otherwise the item is skipped like any other
+/// unplayable one. Any decoded audio is silenced first so librespot doesn't play
+/// over it.
+#[cfg(feature = "streaming")]
+async fn play_queued_spotify(app: &Arc<Mutex<App>>, track: &TrackInfo, uri: &str) -> bool {
+  let player = { app.lock().await.streaming_player.clone() };
+  let Some(player) = player.filter(|p| p.is_connected()) else {
+    set_status(
+      app,
+      format!(
+        "Native streaming isn't connected; skipped \"{}\"",
+        track.name
+      ),
+    )
+    .await;
+    return false;
+  };
+  // Silence any decoded audio so two players never share the sink. A decoded
+  // queue slot is stopped and dropped; a suspended decoded context (which keeps
+  // its player for resume) is paused — resume reloads its sink either way.
+  #[cfg(feature = "audio-decode")]
+  {
+    if let Some(p) = { app.lock().await.take_queue_now_decoded_player() } {
+      p.stop();
+    }
+    if let Some(p) = suspended_context_player(app).await {
+      p.pause();
+    }
+  }
+  player.activate();
+  if let Err(e) = player.play_uri(uri).await {
+    set_status(app, format!("Cannot play {}: {e}", track.name)).await;
+    return false;
+  }
+  {
+    use crate::infra::queue::QueueNowPlaying;
+    let mut guard = app.lock().await;
+    guard.queue_now = Some(QueueNowPlaying::Spotify {
+      track: track.clone(),
+    });
+    // Fresh slot: reset the Spirc self-advance retry budget.
+    guard.spotify_queue_guard_reloads = 0;
+    guard.set_status_message(format!("\u{266a} {} (queue)", track.name), 4);
+  }
+  true
 }
 
 /// Publish the decoded queue slot and announce the track. `tempfile` is the
@@ -444,8 +489,8 @@ async fn resume_or_finish(app: &Arc<Mutex<App>>) {
       context_uri,
       resume_track_uri,
     }) => {
-      // Phase 3 implements the actual Spotify context resume; the IoEvent is a
-      // no-op for now. Stop the decoded queue slot if one exists.
+      // The network handler re-loads the Spotify context (offset by the resume
+      // track) on the native device. Stop the decoded queue slot if one exists.
       #[cfg(feature = "audio-decode")]
       if let Some(player) = queue_player {
         player.stop();
