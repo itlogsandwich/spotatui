@@ -802,15 +802,20 @@ fn draw_lyrics(f: &mut Frame<'_>, app: &App, area: Rect) {
   }
 }
 
-/// Display snapshot for an engine playbar (local files, Subsonic or radio).
+/// Display snapshot for an engine playbar (local files, Subsonic, radio, or the
+/// native queue slot).
 ///
 /// Extracted from the live player so [`render_local_playbar`] is a pure function
 /// of plain values and can be unit-tested with `TestBackend` (no audio device).
+/// Gated to every build that can render one: the decoded sources plus the
+/// native queue slot (`streaming` covers a queued Spotify track).
 #[cfg(any(
   feature = "local-files",
   feature = "subsonic",
   feature = "internet-radio",
-  feature = "youtube"
+  feature = "youtube",
+  feature = "streaming",
+  feature = "audio-decode"
 ))]
 struct LocalPlaybarView {
   /// Source name shown in the playbar title, e.g. `"Local"` or `"Subsonic"`.
@@ -935,7 +940,9 @@ fn draw_radio_playbar(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
   feature = "local-files",
   feature = "subsonic",
   feature = "internet-radio",
-  feature = "youtube"
+  feature = "youtube",
+  feature = "streaming",
+  feature = "audio-decode"
 ))]
 fn render_local_playbar(f: &mut Frame<'_>, app: &App, layout_chunk: Rect, view: &LocalPlaybarView) {
   let playbar_areas = playbar_layout_areas(app, layout_chunk);
@@ -1053,6 +1060,59 @@ fn render_local_playbar(f: &mut Frame<'_>, app: &App, layout_chunk: Rect, view: 
 }
 
 pub fn draw_playbar(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
+  // The native queue slot owns playback: render the queued track, not the
+  // suspended context (whose `*_playback` is still `Some`) and not the stale
+  // Spotify context (still cached when a Spotify context was suspended).
+  // Checked first so the playbar always shows what is actually audible.
+  #[cfg(feature = "audio-decode")]
+  if let Some(crate::infra::queue::QueueNowPlaying::Decoded(d)) = app.queue_now.as_ref() {
+    let source_label = d
+      .track
+      .uri
+      .as_deref()
+      .map(crate::core::queue::queue_item_source)
+      .map(crate::core::queue::source_label)
+      .unwrap_or("Queue");
+    // `advancing` spans the download/decode window (the slot is published
+    // before the fetch), so surface it instead of a silent frozen bar.
+    let name = if d.advancing {
+      format!("{} (loading\u{2026})", d.track.name)
+    } else {
+      d.track.name.clone()
+    };
+    let view = LocalPlaybarView {
+      source_label,
+      name,
+      artists: d.track.artists.join(", "),
+      is_playing: !d.player.is_paused(),
+      position_ms: d.player.position().as_millis(),
+      duration_ms: d.track.duration_ms,
+      volume_percent: app.user_config.behavior.volume_percent,
+      queue_position: None,
+      live: false,
+    };
+    render_local_playbar(f, app, layout_chunk, &view);
+    return;
+  }
+  // A queued Spotify track plays through librespot: progress and play-state
+  // come from the native event stream, metadata from the queue slot.
+  #[cfg(feature = "streaming")]
+  if let Some(crate::infra::queue::QueueNowPlaying::Spotify { track }) = app.queue_now.as_ref() {
+    let view = LocalPlaybarView {
+      source_label: "Spotify",
+      name: track.name.clone(),
+      artists: track.artists.join(", "),
+      is_playing: app.native_is_playing.unwrap_or(true),
+      position_ms: app.song_progress_ms,
+      duration_ms: track.duration_ms,
+      volume_percent: app.user_config.behavior.volume_percent,
+      queue_position: None,
+      live: false,
+    };
+    render_local_playbar(f, app, layout_chunk, &view);
+    return;
+  }
+
   // Local-file playback owns the session and has no Spotify context to render
   // from, so it takes a dedicated path.
   #[cfg(feature = "local-files")]

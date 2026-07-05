@@ -82,6 +82,12 @@ pub struct DecodedQueuePlayback {
   /// Guards the empty-sink window during a queue advance from being read as
   /// end-of-track by the runner tick (mirrors the per-source `advancing` guard).
   pub advancing: bool,
+  /// Generation stamp for the slot's background fetch. A Subsonic/YouTube
+  /// download runs off the IoEvent pump (so it never blocks other events); its
+  /// completion only plays and finalizes when the slot still carries the same
+  /// stamp — a skip or teardown in the meantime republished the slot with a new
+  /// one, and the stale result is silently discarded.
+  pub fetch_id: u64,
   /// The tempfile backing a downloaded track (Subsonic / YouTube). `None` for a
   /// local file, which is played straight from disk. Held purely to keep the
   /// file alive on disk for the duration of playback (dropped with the slot), so

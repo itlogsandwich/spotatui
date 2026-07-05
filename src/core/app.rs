@@ -3056,16 +3056,31 @@ impl App {
   /// `EnsurePlaybackContinues`), `false` to let the normal continue-playback path
   /// run. Two cases:
   ///
-  /// - **A queued Spotify track just ended** (`queue_owns_playback`): advance to
-  ///   the next queued item (or resume when the queue drains).
+  /// - **A queued Spotify track just ended** (`queue_now_is_spotify`): clear the
+  ///   slot *now* — before the advance is processed — so the Spirc self-advance
+  ///   guard can't see the stale slot on the next `TrackChanged` and reissue the
+  ///   finished track over the next item's download window. Pause librespot
+  ///   (Spirc may already be loading its own next track) and advance the queue.
+  /// - **A stray librespot `EndOfTrack` while a decoded queued track owns the
+  ///   sink** (`queue_owns_playback` without a Spotify slot): consume it without
+  ///   touching the queue — advancing would skip the audible decoded track, and
+  ///   `EnsurePlaybackContinues` would resume Spotify over it.
   /// - **A context track ended with items waiting** (queue idle, non-empty):
   ///   snapshot the Spotify context for resume, `pause()` the streaming player to
   ///   preempt Spirc's own auto-advance, then advance the queue.
   #[cfg(feature = "streaming")]
   pub(crate) fn handle_native_spotify_track_end(&mut self) -> bool {
-    if self.queue_owns_playback() {
+    if self.queue_now_is_spotify() {
+      self.queue_now = None;
+      self.spotify_queue_guard_reloads = 0;
+      if let Some(player) = self.streaming_player.as_ref() {
+        player.pause();
+      }
       self.song_progress_ms = 0;
       self.dispatch(IoEvent::AdvanceNativeQueue);
+      return true;
+    }
+    if self.queue_owns_playback() {
       return true;
     }
     if !self.native_queue.is_empty() {
@@ -5874,6 +5889,34 @@ mod tests {
       matches!(rx.recv().unwrap(), IoEvent::AdvanceNativeQueue),
       "expected AdvanceNativeQueue to be dispatched first"
     );
+  }
+
+  /// When the queued Spotify track ends, the slot must be cleared *before* the
+  /// advance is dispatched — a stale slot lets the Spirc self-advance guard
+  /// reissue the finished track over the next item's download window (heard as
+  /// "the Spotify song keeps playing while the YouTube track downloads").
+  #[cfg(feature = "streaming")]
+  #[test]
+  fn spotify_slot_end_clears_slot_before_advancing() {
+    use crate::infra::queue::QueueNowPlaying;
+    let (tx, rx) = channel();
+    let mut app = App::new(tx, UserConfig::new(), Some(SystemTime::now()));
+    app.queue_now = Some(QueueNowPlaying::Spotify {
+      track: queue_track(Some("spotify:track:queued"), "Queued"),
+    });
+    app.spotify_queue_guard_reloads = 1;
+
+    assert!(app.handle_native_spotify_track_end());
+
+    assert!(!app.queue_owns_playback(), "the ended slot is cleared");
+    assert_eq!(app.spotify_queue_guard_reloads, 0);
+    assert!(
+      app
+        .spotify_queue_guard_reload_uri("some-other-track-id")
+        .is_none(),
+      "an empty slot must never reissue the finished track"
+    );
+    assert!(matches!(rx.recv().unwrap(), IoEvent::AdvanceNativeQueue));
   }
 
   #[cfg(feature = "streaming")]

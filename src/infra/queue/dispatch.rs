@@ -239,9 +239,11 @@ async fn try_play_queued(app: &Arc<Mutex<App>>, track: &TrackInfo) -> bool {
 
 #[cfg(feature = "local-files")]
 async fn play_queued_local(app: &Arc<Mutex<App>>, track: &TrackInfo, uri: &str) -> bool {
+  release_librespot(app).await;
   let Some(player) = acquire_queue_player(app).await else {
     return false;
   };
+  let _ = publish_pending_decoded(app, &player, track).await;
   match crate::infra::local::dispatch::play_single_file(&player, uri).await {
     Ok(_info) => {
       apply_volume(app, &player).await;
@@ -257,46 +259,48 @@ async fn play_queued_local(app: &Arc<Mutex<App>>, track: &TrackInfo, uri: &str) 
 
 #[cfg(feature = "subsonic")]
 async fn play_queued_subsonic(app: &Arc<Mutex<App>>, track: &TrackInfo, uri: &str) -> bool {
-  let Some(player) = acquire_queue_player(app).await else {
-    return false;
-  };
+  release_librespot(app).await;
   let Some(source) = crate::infra::subsonic::dispatch::build_source(app).await else {
     return false; // build_source surfaced its own status
   };
-  match crate::infra::subsonic::dispatch::download_and_play(&source, &player, uri).await {
-    Ok(tmp) => {
-      apply_volume(app, &player).await;
-      publish_decoded(app, player, track.clone(), Some(tmp)).await;
-      true
-    }
-    Err(e) => {
-      set_status(app, format!("Cannot play {}: {e}", track.name)).await;
-      false
-    }
-  }
+  let Some(player) = acquire_queue_player(app).await else {
+    return false;
+  };
+  let fetch_id = publish_pending_decoded(app, &player, track).await;
+  // Fetch off the IoEvent pump: awaiting the download here would freeze every
+  // other event (skips included, for every source) for its whole duration.
+  let app = Arc::clone(app);
+  let uri = uri.to_string();
+  let name = track.name.clone();
+  tokio::spawn(async move {
+    let result = crate::infra::subsonic::dispatch::download_for_queue(&source, &uri).await;
+    finish_decoded_fetch(&app, fetch_id, result, &name).await;
+  });
+  true
 }
 
 #[cfg(feature = "youtube")]
 async fn play_queued_youtube(app: &Arc<Mutex<App>>, track: &TrackInfo, uri: &str) -> bool {
+  release_librespot(app).await;
   let Some(player) = acquire_queue_player(app).await else {
     return false;
   };
+  let fetch_id = publish_pending_decoded(app, &player, track).await;
   {
     let mut guard = app.lock().await;
     guard.set_status_message(format!("Fetching {}\u{2026}", track.name), 30);
   }
   let source = crate::infra::youtube::dispatch::build_source(app).await;
-  match crate::infra::youtube::dispatch::download_and_play(&source, &player, uri).await {
-    Ok(tmp) => {
-      apply_volume(app, &player).await;
-      publish_decoded(app, player, track.clone(), Some(tmp)).await;
-      true
-    }
-    Err(e) => {
-      set_status(app, format!("Cannot play {}: {e}", track.name)).await;
-      false
-    }
-  }
+  // Fetch off the IoEvent pump: awaiting yt-dlp here would freeze every other
+  // event (skips included, for every source) for its whole duration.
+  let app = Arc::clone(app);
+  let uri = uri.to_string();
+  let name = track.name.clone();
+  tokio::spawn(async move {
+    let result = crate::infra::youtube::dispatch::download_for_queue(&source, &uri).await;
+    finish_decoded_fetch(&app, fetch_id, result, &name).await;
+  });
+  true
 }
 
 /// Play a queued Spotify track through the native streaming player via a direct
@@ -330,11 +334,10 @@ async fn play_queued_spotify(app: &Arc<Mutex<App>>, track: &TrackInfo, uri: &str
       p.pause();
     }
   }
-  player.activate();
-  if let Err(e) = player.play_uri(uri).await {
-    set_status(app, format!("Cannot play {}: {e}", track.name)).await;
-    return false;
-  }
+  // Publish the slot *before* the load, so librespot events arriving during it
+  // are classified correctly: the stray-playback guard sees a Spotify slot and
+  // lets this track start, and a Spirc self-advance racing the load is caught
+  // by the reload guard instead of slipping through an empty slot.
   {
     use crate::infra::queue::QueueNowPlaying;
     let mut guard = app.lock().await;
@@ -343,15 +346,131 @@ async fn play_queued_spotify(app: &Arc<Mutex<App>>, track: &TrackInfo, uri: &str
     });
     // Fresh slot: reset the Spirc self-advance retry budget.
     guard.spotify_queue_guard_reloads = 0;
+  }
+  player.activate();
+  if let Err(e) = player.play_uri(uri).await {
+    // Unpublish so the failed slot can't shadow the next item (or the resume).
+    app.lock().await.queue_now = None;
+    set_status(app, format!("Cannot play {}: {e}", track.name)).await;
+    return false;
+  }
+  {
+    let mut guard = app.lock().await;
     guard.set_status_message(format!("\u{266a} {} (queue)", track.name), 4);
+    preload_next_queued_spotify(&guard);
   }
   true
 }
 
-/// Publish the decoded queue slot and announce the track. `tempfile` is the
-/// downloaded backing file (Subsonic / YouTube) or `None` (local files play
-/// straight from disk).
+/// Warm the *next* queued Spotify track's audio while the current queue slot
+/// plays. A queued Spotify track is a cold direct `player.load` (metadata +
+/// audio key + CDN handshake), which reads as a small skip delay that Spirc's
+/// own in-context skipping doesn't have — Spirc preloads. This levels that:
+/// called whenever a queue slot starts playing, under whatever `App` borrow the
+/// caller already holds.
+#[cfg(feature = "streaming")]
+fn preload_next_queued_spotify(app: &App) {
+  let Some(uri) = app.native_queue.first().and_then(|t| t.uri.clone()) else {
+    return;
+  };
+  if queue_item_source(&uri) != QueueItemSource::Spotify {
+    return;
+  }
+  if let Some(player) = app.streaming_player.as_ref().filter(|p| p.is_connected()) {
+    player.preload_uri(&uri);
+  }
+}
+
+/// Monotonic source for [`DecodedQueuePlayback::fetch_id`] stamps.
 #[cfg(feature = "audio-decode")]
+static QUEUE_FETCH_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(feature = "audio-decode")]
+fn next_fetch_id() -> u64 {
+  QUEUE_FETCH_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Publish the queue slot for `track` *before* its (possibly multi-second)
+/// download or decode, marked `advancing` so the runner tick doesn't read the
+/// still-empty sink as end-of-track. From this instant `queue_owns_playback()`
+/// is true, so the transport paths (skip, pause, playbar) see the queued track
+/// as current during the fetch. Without this, a skip in the silent download
+/// window fell through to the "context playing with items waiting" branch,
+/// which re-suspended the context and dispatched a second advance — dropping
+/// one queued item on the floor. Returns the slot's fetch stamp, which a
+/// background fetch passes back to [`finish_decoded_fetch`].
+#[cfg(feature = "audio-decode")]
+async fn publish_pending_decoded(
+  app: &Arc<Mutex<App>>,
+  player: &Arc<LocalPlayer>,
+  track: &TrackInfo,
+) -> u64 {
+  use crate::infra::queue::{DecodedQueuePlayback, QueueNowPlaying};
+  let fetch_id = next_fetch_id();
+  let mut guard = app.lock().await;
+  guard.queue_now = Some(QueueNowPlaying::Decoded(DecodedQueuePlayback {
+    player: Arc::clone(player),
+    track: track.clone(),
+    advancing: true,
+    fetch_id,
+    #[cfg(any(feature = "subsonic", feature = "youtube"))]
+    tempfile: None,
+  }));
+  fetch_id
+}
+
+/// Complete a background queue fetch: if the slot still carries `fetch_id`,
+/// play the downloaded file and finalize the slot; otherwise (skipped, torn
+/// down, or replaced meanwhile) drop the result silently. On a download or
+/// decode failure the queue advances past the item, exactly like the old
+/// inline path. Play + finalize happen under one `App` lock so a concurrent
+/// advance (which pops under the same lock) can never interleave.
+#[cfg(any(feature = "subsonic", feature = "youtube"))]
+async fn finish_decoded_fetch(
+  app: &Arc<Mutex<App>>,
+  fetch_id: u64,
+  result: anyhow::Result<tempfile::NamedTempFile>,
+  track_name: &str,
+) {
+  use crate::infra::queue::QueueNowPlaying;
+  let mut guard = app.lock().await;
+  let player = match guard.queue_now.as_ref() {
+    Some(QueueNowPlaying::Decoded(d)) if d.fetch_id == fetch_id => Arc::clone(&d.player),
+    _ => return, // superseded — the tempfile drops here
+  };
+  let tmp = match result {
+    Ok(tmp) => tmp,
+    Err(e) => {
+      guard.set_status_message(format!("Cannot play {track_name}: {e}"), 4);
+      guard.dispatch(IoEvent::AdvanceNativeQueue);
+      return;
+    }
+  };
+  let path = tmp.path().to_path_buf();
+  let decode_player = Arc::clone(&player);
+  let played = tokio::task::spawn_blocking(move || decode_player.play_file(&path))
+    .await
+    .map(|r| r.map_err(|e| e.to_string()))
+    .unwrap_or_else(|e| Err(e.to_string()));
+  if let Err(e) = played {
+    guard.set_status_message(format!("Cannot play {track_name}: {e}"), 4);
+    guard.dispatch(IoEvent::AdvanceNativeQueue);
+    return;
+  }
+  player.set_volume(guard.user_config.behavior.volume_percent as f32 / 100.0);
+  if let Some(QueueNowPlaying::Decoded(d)) = guard.queue_now.as_mut() {
+    d.tempfile = Some(tmp);
+    d.advancing = false;
+  }
+  guard.set_status_message(format!("\u{266a} {track_name} (queue)"), 4);
+  #[cfg(feature = "streaming")]
+  preload_next_queued_spotify(&guard);
+}
+
+/// Publish the decoded queue slot and announce the track. Only the local-file
+/// path finalizes synchronously through here (it plays straight from disk);
+/// downloaded sources finalize via [`finish_decoded_fetch`].
+#[cfg(feature = "local-files")]
 async fn publish_decoded(
   app: &Arc<Mutex<App>>,
   player: Arc<LocalPlayer>,
@@ -366,16 +485,24 @@ async fn publish_decoded(
     player,
     track,
     advancing: false,
+    fetch_id: next_fetch_id(),
     #[cfg(any(feature = "subsonic", feature = "youtube"))]
     tempfile,
   }));
   guard.set_status_message(format!("\u{266a} {name} (queue)"), 4);
+  #[cfg(feature = "streaming")]
+  preload_next_queued_spotify(&guard);
 }
 
 /// Acquire an output-device player for the queue slot, in priority order:
 /// 1. reuse the queue slot's own player (advancing within the queue);
 /// 2. reuse the suspended decoded context's player (device-handoff-free);
-/// 3. pause librespot and open a fresh device.
+/// 3. open a fresh device.
+///
+/// Callers must [`release_librespot`] *before* acquiring, not just on the
+/// fresh-device path: the outgoing queue slot can be a still-playing Spotify
+/// track (mid-track skip / Enter-jump), and on the reuse paths nothing else
+/// silences it — it would keep playing under the whole download window.
 #[cfg(feature = "audio-decode")]
 async fn acquire_queue_player(app: &Arc<Mutex<App>>) -> Option<Arc<LocalPlayer>> {
   if let Some(p) = {
@@ -387,7 +514,6 @@ async fn acquire_queue_player(app: &Arc<Mutex<App>>) -> Option<Arc<LocalPlayer>>
   if let Some(p) = suspended_context_player(app).await {
     return Some(p);
   }
-  release_librespot(app).await;
   match tokio::task::spawn_blocking(LocalPlayer::new).await {
     Ok(Ok(p)) => Some(Arc::new(p)),
     Ok(Err(e)) => {
@@ -423,8 +549,11 @@ async fn suspended_context_player(app: &Arc<Mutex<App>>) -> Option<Arc<LocalPlay
   None
 }
 
-/// Pause native Spotify so librespot releases the output device before the queue
-/// opens a fresh one.
+/// Pause native Spotify before a decoded queue item takes over: it both
+/// releases the output device (when a fresh one is opened) and silences a
+/// still-playing queued Spotify track that is being skipped mid-play. Called
+/// unconditionally at the top of every decoded queue-play path — a Spirc pause
+/// on an already-paused or idle librespot is a no-op.
 #[cfg(feature = "audio-decode")]
 async fn release_librespot(app: &Arc<Mutex<App>>) {
   #[cfg(feature = "streaming")]
@@ -440,7 +569,7 @@ async fn release_librespot(app: &Arc<Mutex<App>>) {
   }
 }
 
-#[cfg(feature = "audio-decode")]
+#[cfg(feature = "local-files")]
 async fn apply_volume(app: &Arc<Mutex<App>>, player: &Arc<LocalPlayer>) {
   let volume = app.lock().await.user_config.behavior.volume_percent;
   player.set_volume(volume as f32 / 100.0);
@@ -464,6 +593,24 @@ async fn resume_or_finish(app: &Arc<Mutex<App>>) {
   use crate::core::queue::SuspendedContext;
 
   let suspended = { app.lock().await.queue_suspended.take() };
+
+  // The slot can still be a *playing* Spotify track when the drain came from a
+  // mid-play skip (only unplayable items were left); silence it before anything
+  // resumes over it. A naturally-ended slot was already cleared at EndOfTrack.
+  #[cfg(feature = "streaming")]
+  {
+    let player = {
+      let guard = app.lock().await;
+      if guard.queue_now_is_spotify() {
+        guard.streaming_player.clone()
+      } else {
+        None
+      }
+    };
+    if let Some(player) = player {
+      player.pause();
+    }
+  }
 
   // Take the queue slot's player so we can decide whether to stop it.
   #[cfg(feature = "audio-decode")]

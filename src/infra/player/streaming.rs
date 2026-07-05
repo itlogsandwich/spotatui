@@ -544,6 +544,16 @@ impl StreamingPlayer {
     self.play_uri(&uri).await
   }
 
+  /// Hint the player to prefetch a track's audio so a subsequent
+  /// [`play_uri`](Self::play_uri) starts near-instantly. Used by the native
+  /// queue to warm its next Spotify item, matching the preloading Spirc does
+  /// within a context. Best-effort: an unparseable URI is silently ignored.
+  pub fn preload_uri(&self, uri: &str) {
+    if let Ok(spotify_uri) = SpotifyUri::from_uri(uri) {
+      self.player.preload(spotify_uri);
+    }
+  }
+
   /// Pause playback
   pub fn pause(&self) {
     // Prefer going through Spirc so Connect state stays consistent.

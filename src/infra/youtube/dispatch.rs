@@ -492,21 +492,12 @@ async fn download_audio(source: &YouTubeSource, video_id: &str) -> Result<NamedT
   Ok(tmp)
 }
 
-/// Download the audio for `uri` and play it on `player`, returning the tempfile
-/// (which the caller must keep alive for the duration of playback). Extracted so
-/// the native queue engine can play a one-off YouTube track on a borrowed player
-/// without touching `youtube_playback`.
-pub(crate) async fn download_and_play(
-  source: &YouTubeSource,
-  player: &Arc<LocalPlayer>,
-  uri: &str,
-) -> Result<NamedTempFile> {
+/// Download the audio for `uri` into a tempfile, for the native queue engine's
+/// off-pump fetch (playing is the queue's job — it re-checks that the queue
+/// slot is still current before touching the shared player).
+pub(crate) async fn download_for_queue(source: &YouTubeSource, uri: &str) -> Result<NamedTempFile> {
   let video_id = video_id_from_uri(uri)?.to_string();
-  let tmp = download_audio(source, &video_id).await?;
-  let path = tmp.path().to_path_buf();
-  let decode_player = Arc::clone(player);
-  tokio::task::spawn_blocking(move || decode_player.play_file(&path)).await??;
-  Ok(tmp)
+  download_audio(source, &video_id).await
 }
 
 /// Decode-failure hint: without ffmpeg on `$PATH`, yt-dlp leaves the download

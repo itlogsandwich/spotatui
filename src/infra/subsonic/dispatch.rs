@@ -344,21 +344,15 @@ async fn download_track(source: &SubsonicSource, track_id: &str) -> Result<Named
   Ok(tmp)
 }
 
-/// Download the track at `uri` and play it on `player`, returning the tempfile
-/// (which the caller must keep alive for the duration of playback). Extracted so
-/// the native queue engine can play a one-off Subsonic track on a borrowed
-/// player without touching `subsonic_playback`.
-pub(crate) async fn download_and_play(
+/// Download the track at `uri` into a tempfile, for the native queue engine's
+/// off-pump fetch (playing is the queue's job — it re-checks that the queue
+/// slot is still current before touching the shared player).
+pub(crate) async fn download_for_queue(
   source: &SubsonicSource,
-  player: &Arc<LocalPlayer>,
   uri: &str,
 ) -> Result<NamedTempFile> {
   let track_id = track_id_from_uri(uri)?.to_string();
-  let tmp = download_track(source, &track_id).await?;
-  let path = tmp.path().to_path_buf();
-  let decode_player = Arc::clone(player);
-  tokio::task::spawn_blocking(move || decode_player.play_file(&path)).await??;
-  Ok(tmp)
+  download_track(source, &track_id).await
 }
 
 /// Begin playing a queue of subsonic tracks, taking over the session and
