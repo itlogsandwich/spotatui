@@ -1,4 +1,4 @@
-use super::Network;
+use super::{ids, IoEvent, Network};
 use crate::core::app::{ActiveBlock, RouteId, TrackTableContext};
 use crate::core::plugin_api::TrackInfo;
 use anyhow::anyhow;
@@ -112,6 +112,12 @@ impl RecommendationNetwork for Network {
         };
 
         let mut app = self.app.lock().await;
+        // Check if these tracks are liked (only the rspotify recommendations,
+        // not the prepended domain-layer seed track).
+        let track_check = ids::track_check_ids(full_tracks.iter().map(|t| t.id.as_ref()));
+        if !track_check.is_empty() {
+          app.dispatch(IoEvent::CurrentUserSavedTracksContains(track_check));
+        }
         app.track_table.tracks = full_tracks.iter().map(TrackInfo::from).collect();
 
         // Prepend the seed track if available so user knows context

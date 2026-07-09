@@ -1,4 +1,4 @@
-use super::Network;
+use super::{ids, IoEvent, Network};
 use crate::core::app::{
   ActiveBlock, Artist, ArtistBlock, EpisodeTableContext, RouteId, ScrollableResultPages,
   SelectedFullShow, SelectedShow,
@@ -165,6 +165,32 @@ impl MetadataNetwork for Network {
     let domain_top_tracks: Vec<TrackInfo> = top_tracks.iter().map(TrackInfo::from).collect();
 
     let mut app = self.app.lock().await;
+
+    // Check if the top tracks are liked.
+    let track_check = ids::track_check_ids(top_tracks.iter().map(|t| t.id.as_ref()));
+    if !track_check.is_empty() {
+      app.dispatch(IoEvent::CurrentUserSavedTracksContains(track_check));
+    }
+
+    // Check if the artist's albums are saved.
+    let album_check: Vec<String> = albums_rspotify_page
+      .items
+      .iter()
+      .filter_map(|album| album.id.as_ref().map(|id| id.id().to_string()))
+      .collect();
+    if !album_check.is_empty() {
+      app.dispatch(IoEvent::CurrentUserSavedAlbumsContains(album_check));
+    }
+
+    // Check if the related artists are followed.
+    let follow_check: Vec<String> = related_artists
+      .iter()
+      .map(|artist| artist.id.id().to_string())
+      .collect();
+    if !follow_check.is_empty() {
+      app.dispatch(IoEvent::UserArtistFollowCheck(follow_check));
+    }
+
     app.artist = Some(Artist {
       artist_id: artist_id_str,
       artist_name: input_artist_name,
@@ -186,6 +212,8 @@ impl MetadataNetwork for Network {
       match fetch_album_tracks_from(self, id.id(), 0).await {
         Ok(track_items) => {
           let album_info = crate::core::plugin_api::AlbumInfo::from(album.as_ref());
+          // Check if these tracks are liked (before `track_items` is consumed).
+          let track_check = ids::track_check_ids(track_items.iter().map(|t| t.id.as_ref()));
           let total = track_items.len() as u32;
           let tracks = Page {
             items: track_items,
@@ -198,6 +226,9 @@ impl MetadataNetwork for Network {
           };
           let tracks_domain = map_page(&tracks, |t| crate::core::plugin_api::TrackInfo::from(t));
           let mut app = self.app.lock().await;
+          if !track_check.is_empty() {
+            app.dispatch(IoEvent::CurrentUserSavedTracksContains(track_check));
+          }
           app.selected_album_simplified = Some(crate::core::app::SelectedAlbum {
             album: album_info,
             tracks: tracks_domain,
@@ -231,6 +262,11 @@ impl MetadataNetwork for Network {
         }
         let album_info = crate::core::plugin_api::AlbumInfo::from(&album);
         let mut app = self.app.lock().await;
+        // Check if these tracks are liked.
+        let track_check = ids::track_check_ids(album.tracks.items.iter().map(|t| t.id.as_ref()));
+        if !track_check.is_empty() {
+          app.dispatch(IoEvent::CurrentUserSavedTracksContains(track_check));
+        }
         app.selected_album_full = Some(crate::core::app::SelectedFullAlbum {
           album: album_info,
           selected_index: 0,
