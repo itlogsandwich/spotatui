@@ -42,7 +42,7 @@ pub fn draw_artist_albums(f: &mut Frame<'_>, app: &App, layout_chunk: Rect) {
       f,
       app,
       tracks_area,
-      &format!("{} - Top Tracks", &artist.artist_name),
+      &format!("{} - Top Tracks", artist.artist_name),
       &top_tracks,
       get_artist_highlight_state(app, ArtistBlock::TopTracks),
       Some(artist.selected_top_track_index),
