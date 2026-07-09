@@ -13,6 +13,7 @@
 use rspotify::model::idtypes::{
   AlbumId, ArtistId, EpisodeId, PlayContextId, PlayableId, PlaylistId, ShowId, TrackId, UserId,
 };
+use rspotify::prelude::*;
 
 /// Generate a tolerant single-id parser for a monomorphic rspotify id-type.
 ///
@@ -98,6 +99,18 @@ pub(crate) fn playable_ids(items: &[String]) -> Vec<PlayableId<'static>> {
   items.iter().filter_map(|s| playable_id(s)).collect()
 }
 
+/// Collect base62 id strings from rspotify tracks for a saved-tracks-contains
+/// check. Tracks without a Spotify id (local files) are skipped.
+pub(crate) fn track_check_ids<'a, 'b: 'a>(
+  ids: impl IntoIterator<Item = Option<&'a TrackId<'b>>>,
+) -> Vec<String> {
+  ids
+    .into_iter()
+    .flatten()
+    .map(|id| id.id().to_string())
+    .collect()
+}
+
 /// Parse a context URI into a [`PlayContextId`] (artist/album/playlist/show).
 ///
 /// Requires a full `spotify:` URI: a bare base62 id is ambiguous across context
@@ -177,6 +190,27 @@ mod tests {
     assert!(album_id(&format!("spotify:album:{BARE}")).is_some());
     // A wrong-type URI must not parse as a track (no fallback to from_id).
     assert!(track_id(&format!("spotify:album:{BARE}")).is_none());
+  }
+
+  #[test]
+  fn track_check_ids_collects_base62_ids_and_skips_local_files() {
+    let one = TrackId::from_id("0000000000000000000001").unwrap();
+    let two = TrackId::from_id("0000000000000000000002").unwrap();
+    // `None` stands in for a local-file track with no Spotify id.
+    let items = vec![Some(&one), None, Some(&two)];
+    assert_eq!(
+      track_check_ids(items.into_iter()),
+      vec![
+        "0000000000000000000001".to_string(),
+        "0000000000000000000002".to_string(),
+      ]
+    );
+  }
+
+  #[test]
+  fn track_check_ids_empty_input_yields_empty_vec() {
+    let items: Vec<Option<&TrackId>> = Vec::new();
+    assert!(track_check_ids(items.into_iter()).is_empty());
   }
 
   #[test]

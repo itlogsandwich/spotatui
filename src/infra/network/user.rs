@@ -1,5 +1,5 @@
 use super::requests::is_rate_limited_error;
-use super::Network;
+use super::{ids, IoEvent, Network};
 use crate::core::app::{ActiveBlock, DiscoverTimeRange, RouteId, UserInfo};
 use crate::core::plugin_api::TrackInfo;
 use anyhow::anyhow;
@@ -164,6 +164,11 @@ impl UserNetwork for Network {
     {
       Ok(page) => {
         let mut app = self.app.lock().await;
+        // Check if these tracks are liked.
+        let track_check = ids::track_check_ids(page.items.iter().map(|t| t.id.as_ref()));
+        if !track_check.is_empty() {
+          app.dispatch(IoEvent::CurrentUserSavedTracksContains(track_check));
+        }
         app.discover_top_tracks = page.items.iter().map(TrackInfo::from).collect();
         app.discover_loading = false;
       }
@@ -221,6 +226,11 @@ impl UserNetwork for Network {
 
     // 4. Update state
     let mut app = self.app.lock().await;
+    // Check if these tracks are liked.
+    let track_check = ids::track_check_ids(all_tracks.iter().map(|t| t.id.as_ref()));
+    if !track_check.is_empty() {
+      app.dispatch(IoEvent::CurrentUserSavedTracksContains(track_check));
+    }
     app.discover_artists_mix = all_tracks.iter().map(TrackInfo::from).collect();
     app.discover_loading = false;
   }
@@ -237,6 +247,12 @@ impl UserNetwork for Network {
       Ok(recently_played) => {
         let domain_page = map_cursor_page(&recently_played, |ph| TrackInfo::from(&ph.track));
         let mut app = self.app.lock().await;
+        // Check if these tracks are liked.
+        let track_check =
+          ids::track_check_ids(recently_played.items.iter().map(|ph| ph.track.id.as_ref()));
+        if !track_check.is_empty() {
+          app.dispatch(IoEvent::CurrentUserSavedTracksContains(track_check));
+        }
         app.recently_played.result = Some(domain_page);
         app.push_navigation_stack(RouteId::RecentlyPlayed, ActiveBlock::RecentlyPlayed);
       }

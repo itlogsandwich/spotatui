@@ -26,7 +26,9 @@ use tokio::sync::Mutex;
 #[cfg(feature = "streaming")]
 use crate::infra::player::StreamingPlayer;
 
-const LIBRARY_CONTAINS_MAX_URIS: usize = 50;
+// Spotify's `me/library/contains` endpoint accepts at most 40 uris per
+// request; anything larger fails with a 400 "Too many uris".
+const LIBRARY_CONTAINS_MAX_URIS: usize = 40;
 
 #[cfg(test)]
 fn next_saved_tracks_offset(page: &Page<SavedTrack>) -> Option<u32> {
@@ -1226,7 +1228,7 @@ mod tests {
       .map(|batch| batch.len())
       .collect::<Vec<_>>();
 
-    assert_eq!(batches, vec![50, 50, 20]);
+    assert_eq!(batches, vec![40, 40, 40]);
   }
 
   #[test]
