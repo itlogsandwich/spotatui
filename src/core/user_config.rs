@@ -2256,14 +2256,14 @@ impl UserConfig {
   }
 
   pub fn padded_liked_icon(&self) -> String {
-    format!("{} ", &self.behavior.liked_icon)
+    format!("{} ", self.behavior.liked_icon)
   }
 
   /// The configured `playing_icon` followed by a single trailing space, for
   /// prepending to the title cell of the currently-playing row. Width-2
   /// (the icon is validated to one column at load time).
   pub fn padded_playing_icon(&self) -> String {
-    format!("{} ", &self.behavior.playing_icon)
+    format!("{} ", self.behavior.playing_icon)
   }
 
   pub fn add_radio_station(

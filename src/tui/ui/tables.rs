@@ -380,11 +380,11 @@ pub fn draw_recommendations_table(f: &mut Frame<'_>, app: &App, layout_chunk: Re
   let recommendations_ui = match &app.recommendations_context {
     Some(RecommendationsContext::Song) => format!(
       "Recommendations based on Song \'{}\'",
-      &app.recommendations_seed
+      app.recommendations_seed
     ),
     Some(RecommendationsContext::Artist) => format!(
       "Recommendations based on Artist \'{}\'",
-      &app.recommendations_seed
+      app.recommendations_seed
     ),
     None => "Recommendations".to_string(),
   };
